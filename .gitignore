@@ -1,0 +1,12 @@
+# El entorno virtual: 2.8 GB. Se reconstruye con requirements.txt.
+.venv/
+
+# Datos y secretos: viven en ~/.config/blue/, nunca aquí.
+config.toml
+*.db
+*.log
+
+__pycache__/
+*.py[cod]
+*.bak
+*.bak[0-9]

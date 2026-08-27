@@ -1,0 +1,80 @@
+# Configuracion del asistente de Wilmer
+
+# --- Cerebro (modelo de lenguaje) -----------------------------------------
+# Proveedor: groq | openrouter | mistral | gemini
+provider = "groq"
+
+# API key GRATIS de Groq: https://console.groq.com/keys
+api_key = ""
+
+# Groq free. gpt-oss-120b: MUCHO mejor llamando herramientas que llama-3.3-70b
+# (crea/ejecuta protocolos sin inventar acciones). Alternativas en Groq:
+#   llama-3.3-70b-versatile (anterior) | llama-3.1-8b-instant (más margen, menos lista)
+model = "openai/gpt-oss-120b"
+
+# OJO: los free tiers de Gemini son DIMINUTOS (flash-lite = 20 req/día real).
+# Gemini de respaldo:
+#   provider = "gemini"
+#   api_key  = "TU_API_KEY_AQUI"
+#   model    = "gemini-2.5-flash-lite"
+
+# --- Voz -------------------------------------------------------------------
+# Motor: kokoro (cálida, neural local, +500 MB RAM)
+#      | edge   (Microsoft Neural, online, gratis, voces muy humanas)
+#      | piper  (ligera, robótica)
+tts = "kokoro"
+# Voz Kokoro (español): ef_dora (femenina) | em_alex (masculina) | em_santa
+kokoro_voice = "ef_dora"
+# Voz Edge-TTS (solo si tts = "edge") — MX/CO/CL/PE/AR
+#   es-MX-DaliaNeural | es-MX-JorgeNeural | es-MX-CecilioNeural | es-MX-RenataNeural
+#   es-CO-SalomeNeural | es-CO-GonzaloNeural
+#   es-CL-CatalinaNeural | es-CL-LorenzoNeural
+#   es-PE-CamilaNeural | es-PE-AlexNeural
+#   es-AR-ElenaNeural | es-AR-TomasNeural
+edge_voice = "es-CL-CatalinaNeural"
+# Voz piper (solo si tts = "piper"): es_MX-claude-high.onnx | es_ES-davefx-medium.onnx
+voice = "es_MX-claude-high.onnx"
+
+# Tamaño del modelo de oido: tiny | base | small | medium
+whisper_size = "small"
+
+assistant_name = "Blue"
+
+# --- Tareas pesadas (Fase 2): delegadas a Claude Code (tu suscripción) ------
+# Modelo para tareas: "sonnet" (el bueno, tarda más) o "haiku" (rápido/barato).
+task_model = "sonnet"
+# Carpeta donde Claude Code trabaja por defecto (proyectos, documentos).
+task_workdir = "/home/wilmer"
+
+# --- Correo (Fase 3): IMAP/SMTP con CONTRASEÑA DE APLICACIÓN -----------------
+# 1) Activa verificación en 2 pasos en tu Google.
+# 2) Crea una "Contraseña de aplicación" en https://myaccount.google.com/apppasswords
+# 3) Pégala aquí (16 letras). NO es tu contraseña normal de Gmail.
+email_address = ""
+email_app_password = ""
+imap_host = "imap.gmail.com"
+smtp_host = "smtp.gmail.com"
+
+# === Cadena de FAILOVER del cerebro =========================================
+# Blue prueba estos en orden. Si uno se agota (límite/cuota), cae solo al
+# siguiente. El último es tu Claude (suscripción, vía CLI): sin herramientas
+# pero confiable. Cuando uno se agota, queda en reposo 10 min y reintenta.
+[[brain]]
+provider = "groq"
+model = "openai/gpt-oss-120b"
+api_key = ""
+
+# Respaldo en Groq (sigue teniendo herramientas) antes de pasar a Gemini.
+[[brain]]
+provider = "groq"
+model = "llama-3.3-70b-versatile"
+api_key = ""
+
+[[brain]]
+provider = "gemini"
+model = "gemini-2.5-flash-lite"
+api_key = ""
+
+[[brain]]
+provider = "claude-cli"
+model = "claude-haiku-4-5"

@@ -1,0 +1,222 @@
+# BLUE
+
+Asistente de voz para Linux. Escucha, habla, y hace cosas de verdad en el
+escritorio: abre y mueve ventanas, lleva agenda y correo, busca en internet,
+consulta tus apuntes, resuelve cálculos de ingeniería y delega el trabajo
+pesado de programación a Claude Code.
+
+Pensado para CachyOS / Arch con Hyprland, pero el cerebro y las herramientas
+funcionan en cualquier Linux; lo único atado a Hyprland es el control de
+ventanas.
+
+---
+
+## Qué sabe hacer
+
+**El escritorio.** Abrir y cerrar aplicaciones, enfocar y mover ventanas entre
+pantallas, cambiar de escritorio, volumen, brillo, portapapeles, capturas,
+apagar o suspender.
+
+**Proyectos y protocolos.** Guardas una combinación ("abre el código, la
+terminal y pon música") y la lanzas por voz. Un proyecto además es un
+contenedor de contexto: su carpeta, su memoria y sus documentos.
+
+**Tus documentos.** Indexa tus apuntes y responde a partir de ellos, citando de
+dónde salió. Acotado al proyecto activo.
+
+**Ingeniería.** Conversión de unidades, propiedades termodinámicas, y cálculos
+de termodinámica, fluidos, transferencia de calor y estructural, con gráficas.
+Local e instantáneo.
+
+**Ver la pantalla.** "Qué dice este error", "explícame este diagrama".
+
+**Agenda y correo.** Anotar, listar, revisar la bandeja y enviar.
+
+**Memoria.** Recuerda tus preferencias y decisiones entre sesiones.
+
+**Trabajo pesado.** Lo delega a Claude Code: leer y editar archivos de un
+proyecto, correr tests, análisis FEM en FreeCAD.
+
+---
+
+## Cómo se comporta
+
+**Habla como alguien, no como un documento.** Lo que dice pasa por dos filtros
+antes de sonar: `estilo.py` convierte las listas en prosa y quita los tics de
+cierre ("en resumen", "¿en qué puedo ayudarte?"), y `texto.py` quita emojis,
+comillas, markdown y reduce las URLs y rutas a su nombre — dice "abro YouTube",
+no la dirección entera. **En pantalla se conserva el formato original**, que
+ahí una tabla o una lista sí se leen bien.
+
+**Te deja terminar de hablar.** Espera 1.8 segundos de silencio real antes de
+dar tu frase por acabada, con un tope de 45 segundos por intervención. El
+umbral de voz se calibra con el ruido de fondo de tu cuarto.
+
+**Avisa cuando algo tarda.** A los 9, 28 y 70 segundos suelta una señal de vida,
+y luego un latido cada minuto y pico. Con las tareas pesadas la escala es más
+amplia. Si dijo "te aviso al terminar", cumple.
+
+**Sabe quién es.** Conoce su modelo, sus capacidades reales y el estado de la
+máquina donde vive.
+
+---
+
+## Instalación en otro equipo
+
+### 1. Dependencias del sistema
+
+```bash
+# Arch / CachyOS
+sudo pacman -S --needed python uv git portaudio ffmpeg playerctl \
+                        wl-clipboard grim slurp libnotify
+
+# Opcionales según lo que uses
+sudo pacman -S --needed hyprland quickshell   # control de ventanas y burbuja
+```
+
+### 2. El código y su entorno
+
+```bash
+git clone https://github.com/willor16/blue-assistant.git ~/.local/share/blue
+cd ~/.local/share/blue
+uv venv .venv --python 3.12
+uv pip install --python .venv/bin/python -r requirements.txt
+```
+
+Son unos 2.8 GB, la mayoría de torch (lo usan Kokoro y Whisper).
+
+### 3. La configuración
+
+```bash
+mkdir -p ~/.config/blue
+cp config.example.toml ~/.config/blue/config.toml
+```
+
+Edita `~/.config/blue/config.toml` y pon **tu** clave. La de Groq es gratis:
+https://console.groq.com/keys
+
+```toml
+provider = "groq"
+model    = "openai/gpt-oss-120b"
+api_key  = "…"
+```
+
+Ese archivo **nunca se sube**: está en el `.gitignore` y vive fuera del repo.
+
+### 4. El lanzador
+
+```bash
+cat > ~/.local/bin/blue << 'EOF'
+#!/bin/sh
+cd "$HOME/.local/share/blue" || exit 1
+exec ./.venv/bin/python blue.py "$@"
+EOF
+chmod +x ~/.local/bin/blue
+```
+
+### 5. Los atajos (Hyprland)
+
+```conf
+exec-once = ~/.local/bin/blue daemon
+bind = Super, J, exec, ~/.local/bin/blue trigger        # escuchar
+bind = Super+Shift, J, exec, ~/.local/bin/blue panel    # el panel
+bind = Super+Ctrl, J, exec, ~/.local/bin/blue toggle    # encender / apagar
+
+windowrule = match:class ^(blue-panel)$, float 1
+windowrule = match:class ^(blue-panel)$, size 900 620
+windowrule = match:class ^(blue-panel)$, center 1
+windowrule = match:class ^(blue-panel)$, rounding 16
+
+windowrule = match:class ^(blue-bubble)$, float 1
+windowrule = match:class ^(blue-bubble)$, size 320 380
+windowrule = match:class ^(blue-bubble)$, pin 1
+windowrule = match:class ^(blue-bubble)$, rounding 22
+```
+
+### 6. Comprobar
+
+```bash
+blue text "hola, ¿qué puedes hacer?"
+```
+
+La primera vez baja los modelos de Whisper y Kokoro, así que tarda.
+
+---
+
+## Uso
+
+```bash
+blue daemon        # residente: voz + panel web. Va en exec-once
+blue trigger       # dispara una escucha           (Super+J)
+blue panel         # la interfaz gráfica           (Super+Shift+J)
+blue toggle        # enciende / apaga              (Super+Ctrl+J)
+blue stop          # lo apaga
+blue text "..."    # prueba por texto, sin micrófono
+```
+
+Hablando:
+
+```
+abre el código en la pantalla 2
+pásate al navegador
+qué tengo abierto
+crea un protocolo llamado estudio que abra Obsidian y ponga música
+trabajemos en termodinámica
+indexa mis apuntes de fluidos
+qué dicen mis apuntes sobre pérdidas por fricción
+mira mi pantalla, qué dice este error
+cuánto es 3 bar en psi
+recuérdame a las seis revisar el correo
+```
+
+---
+
+## Dónde está cada cosa
+
+| Ruta | Qué hay |
+|---|---|
+| `~/.local/share/blue/` | El código y el entorno virtual |
+| `~/.config/blue/config.toml` | Tu configuración y tus claves |
+| `~/.config/blue/memory.json` | Lo que recuerda de ti |
+| `~/.config/blue/protocols.json` | Tus protocolos y proyectos |
+| `~/.config/blue/rag.db` | El índice de tus documentos |
+| `~/.config/blue/agenda.json` | Tu agenda |
+
+Nada de eso viaja al repositorio: son tuyos y de esa máquina.
+
+Si quieres llevarte tu memoria y tus protocolos a otro equipo, copia esos
+`.json` a mano. El índice de documentos conviene rehacerlo allí, porque apunta
+a rutas locales.
+
+---
+
+## Ajustes que igual quieres tocar
+
+En `~/.config/blue/config.toml`:
+
+```toml
+escucha_silencio_s = 1.8    # súbelo si te sigue cortando al pensar
+escucha_max_s      = 45.0   # tope por intervención
+escucha_umbral     = "auto" # o un número fijo, p.ej. 0.012
+
+tts          = "kokoro"     # kokoro (local) | edge (online) | piper (ligero)
+kokoro_voice = "ef_dora"    # ef_dora | em_alex | em_santa
+whisper_size = "small"      # tiny | base | small | medium
+```
+
+---
+
+## Cómo está montado
+
+`blue.py` es la puerta de entrada y el daemon. `assistant.py` orquesta un turno:
+escuchar, pensar, avisar si tarda, hablar. `brain.py` arma el prompt y llama al
+modelo con sus 53 herramientas. `voice.py` graba y sintetiza. `web.py` sirve el
+panel.
+
+Lo demás son las herramientas por área: `actions.py` (escritorio),
+`protocols.py`, `workspace.py`, `rag.py` (documentos), `engineering.py`,
+`agenda.py`, `mailbox.py`, `memory.py`, `vision.py`, `tasks.py` (Claude Code).
+
+Y tres piezas de comportamiento: `conciencia.py` (qué sabe de sí misma y de la
+máquina), `avisos.py` (señales de vida cuando tarda), `estilo.py` + `texto.py`
+(que suene a alguien hablando).

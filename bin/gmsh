@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /home/wilmer/.local/share/jarvis/.venv/bin/python /home/wilmer/.local/share/jarvis/.venv/bin/gmsh "$@"
