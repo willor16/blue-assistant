@@ -146,33 +146,68 @@ def _sonando():
     return ""
 
 
+def _totales():
+    """Cuánta RAM y cuánto disco tiene la máquina. No cuánto queda libre."""
+    ram = disco = ""
+    try:
+        with open("/proc/meminfo") as f:
+            for linea in f:
+                if linea.startswith("MemTotal:"):
+                    ram = f"{int(linea.split()[1]) / 1048576:.0f} GB de RAM"
+                    break
+    except Exception:
+        pass
+    try:
+        disco = f"{shutil.disk_usage(str(Path.home())).total / 1e9:.0f} GB de disco"
+    except Exception:
+        pass
+    return ram, disco
+
+
 def de_la_maquina() -> str:
+    """La parte de la máquina que NO cambia entre un turno y el siguiente.
+
+    Todo lo vivo (carga, uptime, RAM libre, ventanas abiertas, lo que suena)
+    se fue a la herramienta estado_maquina y NO viaja aquí. El motivo es de
+    velocidad, no de estilo: este texto abre el prompt, y Ollama solo reutiliza
+    su caché mientras el principio sea idéntico byte a byte. Con la carga de CPU
+    metida aquí el prefijo cambiaba en cada turno, así que el modelo releía los
+    ~6.400 tokens enteros cada vez: 25 s de peaje por frase. Si algo de aquí
+    vuelve a moverse solo, vuelve el peaje."""
     def armar():
         nombre_so, kernel = _so()
         host = _cmd(["hostnamectl", "hostname"]) or os.uname().nodename
-        linea_ws, apps = _escritorio()
+        ram, disco = _totales()
 
         lineas = [f"- Equipo: {host}"]
         if nombre_so:
             lineas.append(f"- Sistema: {nombre_so}" + (f", kernel {kernel}" if kernel else ""))
-        for etiqueta, valor in (("Encendida desde hace", _uptime()),
-                                ("Memoria", _memoria_ram()),
-                                ("Disco", _disco()),
-                                ("Carga", _carga())):
-            if valor:
-                lineas.append(f"- {etiqueta}: {valor}")
-        if linea_ws:
-            lineas.append(f"- Ahora mismo: {linea_ws}")
-        if apps:
-            lineas.append(f"- Ventanas abiertas: {', '.join(apps)}")
-        son = _sonando()
-        if son:
-            lineas.append(f"- Sonando: {son}")
+        if ram or disco:
+            lineas.append("- Tiene: " + ", ".join(x for x in (ram, disco) if x))
         return "\n".join(lineas)
 
-    # 15 s: lo justo para no repetir el trabajo en una ráfaga de mensajes, y lo
-    # bastante corto para que "¿qué tengo abierto?" conteste la verdad.
-    return _cacheado("maquina", 15, armar) or ""
+    # Una hora: nada de esto cambia sin reiniciar.
+    return _cacheado("maquina", 3600, armar) or ""
+
+
+def ahora_mismo() -> str:
+    """El estado vivo de la máquina, para cuando Wilmer lo pregunte."""
+    lineas = []
+    for etiqueta, valor in (("Encendida desde hace", _uptime()),
+                            ("Memoria", _memoria_ram()),
+                            ("Disco", _disco()),
+                            ("Carga", _carga())):
+        if valor:
+            lineas.append(f"- {etiqueta}: {valor}")
+    linea_ws, apps = _escritorio()
+    if linea_ws:
+        lineas.append(f"- Ahora mismo: {linea_ws}")
+    if apps:
+        lineas.append(f"- Ventanas abiertas: {', '.join(apps)}")
+    son = _sonando()
+    if son:
+        lineas.append(f"- Sonando: {son}")
+    return "\n".join(lineas) or "No pude leer el estado de la máquina."
 
 
 # ══════════════════════════════════════════════════════════════
@@ -334,9 +369,11 @@ def context_block() -> str:
         pass
     maquina = de_la_maquina()
     if maquina:
-        partes.append("\n\n== LA MÁQUINA DONDE VIVES (ahora mismo) ==\n" + maquina
-                      + "\nSon datos reales de este momento. Úsalos si vienen a "
-                        "cuento; no los recites porque sí.")
+        partes.append("\n\n== LA MÁQUINA DONDE VIVES ==\n" + maquina
+                      + "\nSi te preguntan por el estado de ahora (cuánta memoria "
+                        "queda, cuánto lleva encendida, qué tienes abierto, qué "
+                        "suena), llama a estado_maquina; eso cambia y no lo tienes "
+                        "aquí. No recites estos datos porque sí.")
     return "".join(partes)
 
 

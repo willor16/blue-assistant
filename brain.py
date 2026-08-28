@@ -210,6 +210,11 @@ def listar_carpeta(ruta: str = "") -> str:
     return _log(actions.listar_carpeta(ruta))
 
 
+def estado_maquina() -> str:
+    "Estado de ESTA computadora ahora mismo: cuánto lleva encendida, memoria y disco libres, carga de CPU, en qué escritorio está, qué ventanas hay abiertas y qué música suena. Úsala cuando Wilmer pregunte por el estado del equipo; esos datos no están en tu contexto porque cambian a cada segundo."
+    return _log(actions.estado_maquina())
+
+
 
 def consultar_orfeo(pregunta: str) -> str:
     "Le pasa una pregunta a ORFEO, el cerebro que piensa despacio, y devuelve su razonamiento en texto. Úsala cuando haga falta pensar largo y a fondo: una explicación teórica densa, un análisis con matices, comparar alternativas, un problema conceptual duro. ORFEO no toca el escritorio ni ejecuta nada, solo piensa y devuelve texto. TARDA entre 20 segundos y 2 minutos, así que avisa a Wilmer antes de llamarla. NO la uses para cálculos de ingeniería (usa engineering_calc), ni para trabajo sobre archivos (eso es de ÉREBO, usa dev_task), ni para preguntas normales que ya sabes contestar tú."
@@ -323,7 +328,7 @@ TOOLS = [
     crear_espacio, listar_espacios, indexar_apuntes,
     indexar_documentos, consultar_documentos,
     consultar_orfeo, consultar_icaro,
-    crear_carpeta, listar_carpeta,
+    crear_carpeta, listar_carpeta, estado_maquina,
 ]
 
 SYSTEM_PROMPT = """Eres BLUE, el asistente de voz de Wilmer en Linux (CachyOS/Hyprland).
@@ -604,6 +609,48 @@ class Brain:
                 nm["tool_calls"] = llamadas
             fuera.append(nm)
         return fuera
+
+    def calentar(self) -> str:
+        """Deja la caché de prompt de Ollama caliente antes de que Wilmer hable.
+
+        La primera llamada con un prefijo nuevo cuesta ~25 s porque el modelo
+        relee los ~6.400 tokens; las siguientes van a uno o dos segundos. Si eso
+        se paga al arrancar el daemon, ya nadie lo espera con el micrófono
+        abierto. Calienta el juego de siempre —núcleo más ingeniería, que es lo
+        que más pide— y no toca el historial."""
+        b = next((x for x in self.backends if x["kind"] == "ollama"), None)
+        if b is None:
+            return "sin cerebro de casa que calentar"
+        import time
+        import urllib.request
+        activos = {"ingenieria"}
+        try:
+            import dieta
+            permitidas = set(dieta.nucleo([f.__name__ for f in TOOLS]))
+            permitidas |= set(dieta.GRUPOS["ingenieria"][0])
+            esquemas = [e for e in self._todos_esquemas
+                        if e["function"]["name"] in permitidas]
+        except Exception:
+            esquemas, activos = list(self._todos_esquemas), None
+        cuerpo = json.dumps({
+            "model": b["model"],
+            "messages": [{"role": "system", "content": _system_content(activos)},
+                         {"role": "user", "content": "."}],
+            "tools": esquemas,
+            "stream": False, "think": False,
+            "keep_alive": b["keep_alive"],
+            "options": {"temperature": 0, "num_predict": 1},
+        }).encode()
+        req = urllib.request.Request(
+            b["base"] + "/api/chat", data=cuerpo,
+            headers={"Content-Type": "application/json"})
+        ini = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                r.read()
+        except Exception as e:
+            return f"no pude calentar el cerebro de casa: {e}"
+        return f"cerebro de casa caliente en {time.time() - ini:.0f} s"
 
     def _run_ollama(self, backend) -> str:
         """El cerebro de casa. Sin cupo, y con la caché de prompt de Ollama va

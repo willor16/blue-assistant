@@ -65,6 +65,16 @@ class Assistant:
                 self.brain()
             except Exception as e:
                 print(f"(aviso) cerebro no disponible: {e}")
+        # Deja caliente la caché de prompt del cerebro de casa: si no, el primer
+        # turno del día se lo come Wilmer esperando con el micrófono abierto.
+        # En un hilo aparte porque son ~25 s y el daemon debe quedar usable ya.
+        def _calentar():
+            try:
+                print(f"({self.brain().calentar()})", flush=True)
+            except Exception as e:
+                print(f"(aviso) no pude calentar: {e}", flush=True)
+        import threading
+        threading.Thread(target=_calentar, daemon=True).start()
 
     # ------------------------------------------------ comando por texto
     def handle_text(self, text: str, speak: bool = False) -> str:

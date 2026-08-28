@@ -585,3 +585,9 @@ def listar_carpeta(ruta: str = "") -> str:
     nombres = [(c.name + "/" if c.is_dir() else c.name) for c in cosas[:40]]
     extra = f" y {len(cosas) - 40} cosas más" if len(cosas) > 40 else ""
     return f"En {p}: " + ", ".join(nombres) + extra + "."
+
+
+def estado_maquina() -> str:
+    """Estado de ESTA computadora ahora mismo: cuánto lleva encendida, memoria y disco libres, carga de CPU, en qué escritorio estás, qué ventanas hay abiertas y qué música suena. Úsala cuando Wilmer pregunte por el estado del equipo; esos datos no están en tu contexto porque cambian a cada segundo."""
+    import conciencia
+    return conciencia.ahora_mismo()
