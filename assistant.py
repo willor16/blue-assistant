@@ -246,18 +246,56 @@ class Assistant:
         return text, None
 
     # ---------------------------------------- afirmación / negación (confirmaciones)
-    _YES = ("si", "sí", "dale", "hazlo", "házlo", "confirmo", "claro", "adelante",
-            "ok", "okay", "va", "procede", "sip", "hágalo", "hagalo", "obvio",
-            "por supuesto", "afirmativo", "sí hazlo", "si hazlo")
-    _NO = ("no", "mejor no", "déjalo", "dejalo", "cancela", "olvídalo", "olvidalo",
-           "nel", "negativo", "para", "detente", "no hagas")
+    # Sí y no. Van en dos listas por un motivo: "no, así está bien" empieza por
+    # "no," con coma, y el startswith("no ") de antes no lo veía, así que una
+    # negación clarísima se colaba como pregunta nueva.
+    #
+    # Y las palabras ambiguas solo valen SOLAS. "para" estaba entre los noes con
+    # startswith, así que "para qué sirve esto" contaba como negativa; "va" y
+    # "ya" tienen el mismo problema al revés.
+    _YES = ("si", "sí", "dale", "hazlo", "házlo", "confirmo", "adelante",
+            "ok", "okay", "procede", "sip", "hágalo", "hagalo", "obvio",
+            "por supuesto", "afirmativo", "sí hazlo", "si hazlo", "sí dale",
+            "claro que sí", "claro que si", "claro sí", "claro si",
+            "si dale", "venga", "vale", "de una", "por favor", "mándala",
+            "mandala", "mándasela", "mandasela", "pásasela", "pasasela",
+            "sí por favor", "si por favor", "sí claro", "si claro", "hazlo ya")
+    _YES_SOLO = ("va", "ya", "sale", "perfecto", "listo", "correcto", "exacto",
+                 "claro")
+    _NO = ("no", "mejor no", "déjalo", "dejalo", "déjala", "dejala", "cancela",
+           "olvídalo", "olvidalo", "nel", "negativo", "detente", "no hagas",
+           "no hace falta", "no gracias", "no importa", "así está bien",
+           "asi esta bien", "está bien así", "esta bien asi", "ya está",
+           "ya esta", "para nada", "nada", "quita", "anula", "bórralo", "borralo")
+    _NO_SOLO = ("para", "párale", "parale", "nop", "nah", "tampoco")
+
+    @staticmethod
+    def _limpia_respuesta(text: str) -> str:
+        """minúsculas y sin puntuación, para que la coma no rompa la comparación."""
+        import re as _re
+        t = _re.sub(r"[,.;:!?¡¿…\-—\"'']+", " ", (text or "").lower())
+        return " ".join(t.split())
 
     def _is_affirmation(self, text: str) -> bool:
-        t = text.lower().strip(" .!?¡¿")
+        t = self._limpia_respuesta(text)
+        if not t:
+            return False
+        if t in self._YES_SOLO:
+            return True
         return any(t == y or t.startswith(y + " ") for y in self._YES)
 
+    # "no sé cómo va esto" empieza por no y no es un rechazo: es la pregunta.
+    _NO_FALSOS = ("no se ", "no sé ", "no entiendo", "no recuerdo", "no me acuerdo",
+                  "no tengo ni idea", "no estoy seguro")
+
     def _is_negation(self, text: str) -> bool:
-        t = text.lower().strip(" .!?¡¿")
+        t = self._limpia_respuesta(text)
+        if not t:
+            return False
+        if any(t.startswith(f) for f in self._NO_FALSOS):
+            return False
+        if t in self._NO_SOLO:
+            return True
         return any(t == n or t.startswith(n + " ") for n in self._NO)
 
     # ----------------------------------------- componer respuesta de tarea (texto)
