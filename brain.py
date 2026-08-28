@@ -200,6 +200,17 @@ def dev_task(instruction: str) -> str:
     return res.get("text", "") or "Sin resultado."
 
 
+def crear_carpeta(ruta: str) -> str:
+    "Crea una CARPETA sin más (y las intermedias que falten). Úsala siempre que Wilmer diga 'crea una carpeta', 'haz un directorio' o 'créame una carpeta en tal sitio'. ruta: la ruta; si no es absoluta se crea dentro de ~/Documentos. NO la confundas con create_project ni con crear_espacio: esas montan un proyecto con protocolo y memoria, y no es lo que pide cuando solo quiere una carpeta."
+    return _log(actions.crear_carpeta(ruta))
+
+
+def listar_carpeta(ruta: str = "") -> str:
+    "Dice qué archivos y carpetas hay dentro de una carpeta. ruta vacía = ~/Documentos. Úsala antes de dar por hecho que algo no existe."
+    return _log(actions.listar_carpeta(ruta))
+
+
+
 def consultar_orfeo(pregunta: str) -> str:
     "Le pasa una pregunta a ORFEO, el cerebro que piensa despacio, y devuelve su razonamiento en texto. Úsala cuando haga falta pensar largo y a fondo: una explicación teórica densa, un análisis con matices, comparar alternativas, un problema conceptual duro. ORFEO no toca el escritorio ni ejecuta nada, solo piensa y devuelve texto. TARDA entre 20 segundos y 2 minutos, así que avisa a Wilmer antes de llamarla. NO la uses para cálculos de ingeniería (usa engineering_calc), ni para trabajo sobre archivos (eso es de ÉREBO, usa dev_task), ni para preguntas normales que ya sabes contestar tú."
     import cerebros
@@ -289,7 +300,7 @@ def leave_project() -> str:
     return _log(workspace.deactivate())
 
 def set_project_folder(name: str, path: str, kind: str = "") -> str:
-    "Liga una CARPETA a un proyecto (créalo si no existe). path: ruta absoluta donde vive el repo o los archivos. kind opcional: 'code' (programación) o 'mecanica' (ingeniería mecánica). Úsala cuando Wilmer diga en qué carpeta vive un proyecto."
+    "Liga una carpeta que YA EXISTE a un proyecto (el proyecto sí se crea si no lo hay). Si la carpeta todavía no existe, créala antes con crear_carpeta. path: ruta absoluta donde vive el repo o los archivos. kind opcional: 'code' (programación) o 'mecanica' (ingeniería mecánica). Úsala cuando Wilmer diga en qué carpeta vive un proyecto."
     import workspace
     return _log(workspace.set_folder(name, path, kind))
 
@@ -312,6 +323,7 @@ TOOLS = [
     crear_espacio, listar_espacios, indexar_apuntes,
     indexar_documentos, consultar_documentos,
     consultar_orfeo, consultar_icaro,
+    crear_carpeta, listar_carpeta,
 ]
 
 SYSTEM_PROMPT = """Eres BLUE, el asistente de voz de Wilmer en Linux (CachyOS/Hyprland).

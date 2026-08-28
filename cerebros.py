@@ -136,34 +136,57 @@ def ficha(nombre: str) -> dict:
 # ══════════════════════════════════════════════════════════════
 # Whisper escribe estos nombres de mil maneras. Se comparan sin tildes y se
 # admiten los desvíos que de verdad salen del oído.
+# Whisper y el oído escriben estos nombres de mil maneras. Lo que más duele es
+# la be y la uve: "Érebo" sale casi siempre como "Erevo". Se compara sin tildes.
 _ALIAS = {
-    "PROMETEO": r"promete[oa]s?|prometheo",
-    "ORFEO":    r"orfe[oa]s?|orpheo|orfe",
-    "ARGOS":    r"argos|argus|arcos",
-    "ICARO":    r"icar[oa]s?|ycaro",
-    "EREBO":    r"[hj]?ereb[oa]s?|erebu[ms]",
+    "PROMETEO": r"promete[oa]s?|prometheo|prometh?e|prometo",
+    "ORFEO":    r"orfe[oa]s?|orpheo|orfeu|orfe",
+    "ARGOS":    r"argos|argus|arcos|argot",
+    "ICARO":    r"h?[iy]car[oa]s?|h?icar",
+    "EREBO":    r"[hj]?ere[bv][oa]s?|[hj]?ere[bv]u[ms]|[hj]?ereb",
 }
 
-# Se dirige a uno: al principio de la frase, o detrás de un verbo de encargo.
-_ENCARGO = (r"(?:preg[uú]ntale\s+a|preg[uú]ntaselo\s+a|p[aá]saselo\s+a|"
-            r"p[aá]sale\s+esto\s+a|d[ií]le\s+a|que\s+lo\s+vea|que\s+lo\s+haga|"
-            r"con\s+|usa\s+a|usa\s+|llama\s+a|que\s+se\s+encargue|"
-            r"delega\w*\s+en|mand[aá]selo\s+a|tira\s+de)\s*")
+# Se dirige a uno de dos maneras. O lo llama por delante ("Orfeo, explícame…"),
+# o lo nombra a mitad de frase para decir QUIÉN debe hacerlo ("...utilizando el
+# cerebro de Érebo"). En el segundo caso el encargo NO es lo que viene detrás
+# del nombre: es la frase entera quitándole el "utilizando el cerebro de X".
+_DELEGA = (r"(?:preg[uú]ntale\s+a|preg[uú]ntaselo\s+a|p[aá]saselo\s+a|"
+           r"p[aá]sale\s+(?:esto\s+)?a|d[ií]le\s+a|d[eé]ja(?:selo|lo)?\s+a|"
+           r"mand[aá](?:selo)?\s+a|encarg\w*\s+(?:esto\s+)?a|delega\w*\s+en|"
+           r"que\s+(?:lo|la|esto)\s+(?:vea|haga|hagas|resuelva|programe|escriba)|"
+           r"que\s+se\s+encargue(?:\s+de)?|a\s+cargo\s+de|tira\s+de|"
+           r"(?:us(?:a|ame|ando)|utiliza(?:ndo)?|ocupa(?:ndo)?)\s*"
+           r"(?:a\s+|al\s+|el\s+cerebro\s+de\s+|la\s+de\s+)?|"
+           r"con\s+(?:el\s+cerebro\s+de\s+)?|el\s+cerebro\s+de\s+|llama\s+a)\s*")
 
-# Está preguntando POR ellos, no llamándolos. "qué cerebros tenemos",
-# "explícame lo de ORFEO", "quién es ÍCARO". Eso lo contesta PROMETEO.
-_PREGUNTA_POR = re.compile(
-    r"\b(qu[eé]|cu[aá]l\w*|qui[eé]n\w*|c[oó]mo|cu[aá]nto\w*|expl[ií]ca\w*|"
-    r"cu[eé]nta\w*|dime|list\w*|res[uú]me\w*|para\s+qu[eé]|diferencia\w*|"
-    r"tenemos|tienes|hay|existe\w*|sirve\w*|es\s+mejor)\b", re.IGNORECASE)
+# Está preguntando POR ellos, no llamándolos. Estas guardas se aplican SOBRE EL
+# TEXTO ORIGINAL, con sus tildes, y no sobre el aplanado: al quitar la tilde,
+# "que" (la conjunción de "que lo haga Érebo") se vuelve idéntica a "qué" (la
+# pregunta), y toda orden con un "que" dentro parecía una consulta.
+#
+# Y ojo con pasarse de listo: "explícame" o "cuéntame" NO son preguntas sobre
+# el motor, son el encargo en sí. "Orfeo, explícame Bernoulli" es trabajo.
+_INTERROGA_INICIO = re.compile(
+    r"^\s*¿?\s*(qué|cuál\w*|quién\w*|cómo|cuánt\w*|dónde|para\s+qué|"
+    r"qu[eé]\s+(es|son|hace|hacen)|cu[aá]l\s+es)\b", re.IGNORECASE)
+# "¿qué es ORFEO?", "¿para qué sirve ÉREBO?": preguntan por su identidad.
+_PREGUNTA_IDENT = re.compile(
+    r"^\s*¿?\s*(qu[eé]\s+(es|son|hace|hacen|tal|significa)|"
+    r"qui[eé]n\s+(es|son)|c[oó]mo\s+(es|funciona)|"
+    r"para\s+qu[eé]\s+(sirve|es|vale))\b", re.IGNORECASE)
 
 
 def detectar(texto: str):
     """¿Está llamando a un motor por su nombre clave?
 
-    Devuelve (NOMBRE, resto_de_la_frase) o None. Es deliberadamente estricto:
-    ante la duda devuelve None y contesta PROMETEO, que es lo que Wilmer quiere
-    el 90 por ciento de las veces. Preguntar "¿qué es ORFEO?" no lo invoca.
+    Devuelve (NOMBRE, encargo) o None. Dos formas de llamarlo:
+
+      vocativo   "Orfeo, explícame X"        -> el encargo es lo que sigue
+      delegación "...haz X usando a Érebo"   -> el encargo es la frase sin el
+                                                "usando a Érebo"
+
+    Ante la duda devuelve None y contesta PROMETEO. Preguntar "¿qué es ORFEO?"
+    no lo invoca.
     """
     t = (texto or "").strip()
     if not t:
@@ -171,30 +194,31 @@ def detectar(texto: str):
     plano = _sin_tildes(t).lower()
 
     for nombre, alias in _ALIAS.items():
-        # al principio: "orfeo, ¿cuánto...?"  |  "blue, orfeo: ..."
+        # 1) vocativo: abre la frase
         m = re.match(r"^\s*(?:blue[,: ]+\s*)?(?:oye[,: ]+\s*)?(?:" + alias
                      + r")\b[\s,:.\-—]*(.*)$", plano, re.DOTALL)
-        if not m:
-            # detrás de un verbo de encargo: "pregúntale a orfeo cuánto..."
-            m = re.search(_ENCARGO + r"(?:" + alias + r")\b[\s,:.\-—]*(.*)$",
-                          plano, re.DOTALL)
-        if not m:
-            continue
-
-        resto_plano = (m.group(1) or "").strip()
-        # Si detrás no queda encargo y la frase es una pregunta sobre él,
-        # no lo estamos llamando: nos están preguntando quién es.
-        if not resto_plano and _PREGUNTA_POR.search(plano):
-            return None
-        if resto_plano and _PREGUNTA_POR.match(resto_plano):
-            # "orfeo qué es" -> pregunta, no encargo
-            if len(resto_plano.split()) <= 4:
+        if m:
+            resto_plano = (m.group(1) or "").strip()
+            resto = _recortar_original(t, len(plano) - len(resto_plano)).strip()
+            # "Orfeo, ¿qué eres?" pregunta por él; "Orfeo, explícame X" es encargo.
+            if _PREGUNTA_IDENT.match(resto):
                 return None
+            return nombre, resto
 
-        # Recortar sobre el texto ORIGINAL (con tildes y mayúsculas), no sobre
-        # el aplanado: lo que se le manda al motor debe ir tal cual se dijo.
-        resto = _recortar_original(t, len(plano) - len(resto_plano))
-        return nombre, resto.strip()
+        # 2) delegación: lo nombra a mitad de frase para decir quién lo hace
+        d = re.search(_DELEGA + r"(?:" + alias + r")\b[\s,:.;\-—]*", plano)
+        if d:
+            # el encargo es TODO menos el trozo que decía a quién dárselo
+            limpio_plano = (plano[:d.start()] + " " + plano[d.end():])
+            limpio = (_recortar_original(t, 0)[:d.start()] + " "
+                      + _recortar_original(t, 0)[d.end():])
+            limpio = re.sub(r"\s{2,}", " ", limpio).strip(" ,;:.")
+            # "¿qué usa érebo?" es una pregunta, no un encargo: si al quitar el
+            # trozo de delegación no queda tarea y la frase abría preguntando,
+            # no lo estamos llamando.
+            if len(limpio_plano.split()) < 3 and _INTERROGA_INICIO.match(t):
+                return None
+            return nombre, limpio
     return None
 
 

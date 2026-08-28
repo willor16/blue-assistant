@@ -541,3 +541,47 @@ def run_action(name: str, params: dict) -> str:
         return fn(**params)
     except Exception as e:
         return f"(error en {name}: {e})"
+
+
+# ── carpetas sueltas ───────────────────────────────────────────────────────
+# Faltaba lo más simple. BLUE sabía crear "proyectos" y "espacios de estudio",
+# que son contenedores con protocolo y memoria propia, pero no una carpeta y
+# ya. Así que "crea una carpeta en Documentos que se llame feria tecnológica"
+# se colaba por la maquinaria de proyectos y acababa en Proyectos Universidad.
+def crear_carpeta(ruta: str) -> str:
+    """Crea una carpeta (y las intermedias que falten) dentro de la casa."""
+    from pathlib import Path
+    p = Path(str(ruta).strip().strip('"').strip("'")).expanduser()
+    if not p.is_absolute():                       # "feria tecnológica" -> Documentos
+        p = Path.home() / "Documentos" / p
+    casa = Path.home().resolve()
+    try:
+        destino = p.resolve()
+        destino.relative_to(casa)                 # nada fuera de /home/wilmer
+    except (ValueError, OSError):
+        return f"No creo carpetas fuera de tu carpeta personal: {p}"
+    if destino.is_file():
+        return f"Ahí ya hay un archivo con ese nombre, no una carpeta: {destino}"
+    if destino.is_dir():
+        return f"Esa carpeta ya existía: {destino}"
+    try:
+        destino.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return f"No pude crear la carpeta: {e}"
+    return f"Carpeta creada: {destino}"
+
+
+def listar_carpeta(ruta: str = "") -> str:
+    """Dice qué hay dentro de una carpeta."""
+    from pathlib import Path
+    p = Path(str(ruta).strip() or str(Path.home() / "Documentos")).expanduser()
+    if not p.is_absolute():
+        p = Path.home() / "Documentos" / p
+    if not p.is_dir():
+        return f"No existe esa carpeta: {p}"
+    cosas = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+    if not cosas:
+        return f"{p} está vacía."
+    nombres = [(c.name + "/" if c.is_dir() else c.name) for c in cosas[:40]]
+    extra = f" y {len(cosas) - 40} cosas más" if len(cosas) > 40 else ""
+    return f"En {p}: " + ", ".join(nombres) + extra + "."

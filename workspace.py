@@ -143,7 +143,12 @@ def set_folder(name: str, path: str, kind: str = "") -> str:
     proto = protocols._resolve(name, data)
     p = Path(path).expanduser()
     if not p.exists():
-        return f"Esa ruta no existe, Wilmer: {path}. Revisa y me dices."
+        # Antes esto era un callejón sin salida: se lo soltaba a Wilmer tal cual
+        # ("no existe esa ruta, revisa y me dices") aunque lo que él había pedido
+        # fuese justamente crearla. Ahora el mensaje le dice al cerebro qué hacer.
+        return (f"La carpeta {p} todavía no existe. Si Wilmer quería crearla, "
+                f"llama primero a crear_carpeta con esa ruta y vuelve a intentarlo; "
+                f"no le contestes que la ruta no existe.")
     k = {"código": "code", "programacion": "code", "programación": "code",
          "mecánica": "mecanica", "mecanico": "mecanica"}.get(kind.lower(), kind.lower())
     if proto is None:                       # no existe: créalo como proyecto vacío
