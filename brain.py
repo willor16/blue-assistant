@@ -379,10 +379,7 @@ PROVIDERS = {
     "mistral":    "https://api.mistral.ai/v1",
     # gemini también expone un endpoint compatible con OpenAI
     "gemini":     "https://generativelanguage.googleapis.com/v1beta/openai/",
-    # el Ollama de la otra PC de Wilmer. Sin cupo y sin nube: es la red de
-    # seguridad de verdad, la que deja a BLUE con manos cuando se acaba el
-    # diario de los de pago. Más lento, pero nunca dice que no puede hacer nada.
-    "ollama":     "",          # se resuelve en tiempo real desde config
+    # ollama NO va aquí: habla por su API nativa, no por /v1. Ver _run_ollama.
 }
 
 _TYPE_MAP = {int: "integer", float: "number", bool: "boolean", str: "string"}
@@ -471,27 +468,31 @@ class Brain:
         self.backends = []
         for spec in chain:
             prov = spec.get("provider", "groq")
+            clase = "openai"
+            if prov == "claude-cli":
+                clase = "claude_cli"
+            elif prov == "ollama":
+                # Vía NATIVA, no /v1. Por la compatible con OpenAI no se puede
+                # apagar el pensamiento del modelo, y estos razonan antes de
+                # contestar: 27 s pensando contra 21 s sin pensar, y encima el
+                # `content` a veces vuelve vacío porque se gastó la salida ahí.
+                clase = "ollama"
             b = {"provider": prov, "model": spec.get("model", ""),
-                 "kind": "claude_cli" if prov == "claude-cli" else "openai",
-                 "cooldown_until": 0.0, "client": None}
-            if b["kind"] == "openai":
-                espera = 30.0
-                if prov == "ollama":
-                    # OJO: PROVIDERS["ollama"] va vacío a propósito (el host sale
-                    # de la configuración), y una cadena vacía es falsa, así que
-                    # un `or` la saltaba y acababa apuntando a Groq.
-                    base = spec.get("base_url")
-                    if not base:
-                        try:
-                            import cerebros
-                            base = cerebros.ollama_host() + "/v1"
-                        except Exception:
-                            base = "http://192.168.0.22:11434/v1"
-                    espera = 240.0    # cargar 20 GB y responder no cabe en 30 s
-                else:
-                    base = spec.get("base_url") or PROVIDERS.get(prov) or PROVIDERS["groq"]
-                b["client"] = OpenAI(api_key=spec.get("api_key") or "ollama",
-                                     base_url=base, timeout=espera)
+                 "kind": clase, "cooldown_until": 0.0, "client": None,
+                 "base": "", "keep_alive": spec.get("keep_alive", "8h")}
+            if b["kind"] == "ollama":
+                base = spec.get("base_url")
+                if not base:
+                    try:
+                        import cerebros
+                        base = cerebros.ollama_host()
+                    except Exception:
+                        base = "http://192.168.0.22:11434"
+                b["base"] = base.rstrip("/").removesuffix("/v1")
+            elif b["kind"] == "openai":
+                base = spec.get("base_url") or PROVIDERS.get(prov) or PROVIDERS["groq"]
+                b["client"] = OpenAI(api_key=spec.get("api_key", ""),
+                                     base_url=base, timeout=30.0)
             self.backends.append(b)
         self._fns = {f.__name__: f for f in TOOLS}
         self._todos_esquemas = _build_schemas()
@@ -570,6 +571,95 @@ class Brain:
                                       "content": str(result)})
         return LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo"
 
+    # ── el cerebro local, por la vía nativa de Ollama ──────────────────────
+    @staticmethod
+    def _a_ollama(mensajes):
+        """Traduce el historial al formato nativo de Ollama.
+
+        La diferencia que muerde: en OpenAI los argumentos de una herramienta
+        viajan como CADENA JSON, y en Ollama como diccionario. Y los resultados
+        no llevan tool_call_id, llevan el nombre de la herramienta."""
+        fuera = []
+        for m in mensajes:
+            rol = m.get("role")
+            if rol == "tool":
+                t = {"role": "tool", "content": str(m.get("content", ""))}
+                if m.get("_name"):        # puede faltar si el turno lo hizo otro backend
+                    t["tool_name"] = m["_name"]
+                fuera.append(t)
+                continue
+            nm = {"role": rol, "content": m.get("content") or ""}
+            if m.get("tool_calls"):
+                llamadas = []
+                for c in m["tool_calls"]:
+                    fn = c.get("function", {})
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                    llamadas.append({"function": {"name": fn.get("name", ""),
+                                                  "arguments": args or {}}})
+                nm["tool_calls"] = llamadas
+            fuera.append(nm)
+        return fuera
+
+    def _run_ollama(self, backend) -> str:
+        """El cerebro de casa. Sin cupo, y con la caché de prompt de Ollama va
+        a un segundo por turno una vez cargado (la primera cuesta unos 20 s).
+
+        `think: False` es obligatorio: estos modelos razonan antes de contestar
+        y, además de tardar más, se gastan la salida en el pensamiento y el
+        `content` vuelve vacío."""
+        import urllib.error
+        import urllib.request
+
+        self._degraded = False
+        url = backend["base"] + "/api/chat"
+        for _ in range(6):                       # rondas máximas de herramientas
+            cuerpo = json.dumps({
+                "model": backend["model"],
+                "messages": self._a_ollama(self.messages),
+                "tools": self._schemas,
+                "stream": False,
+                "think": False,
+                "keep_alive": backend["keep_alive"],
+                "options": {"temperature": 0},
+            }).encode()
+            req = urllib.request.Request(
+                url, data=cuerpo, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=300) as r:
+                datos = json.loads(r.read().decode())
+            msg = datos.get("message", {}) or {}
+            calls = msg.get("tool_calls") or []
+            hist = {"role": "assistant", "content": msg.get("content") or ""}
+            if calls:
+                hist["tool_calls"] = [
+                    {"id": f"c{i}", "type": "function",
+                     "function": {"name": c["function"]["name"],
+                                  "arguments": json.dumps(
+                                      c["function"].get("arguments") or {})}}
+                    for i, c in enumerate(calls)]
+            self.messages.append(hist)
+            if not calls:
+                return (msg.get("content") or "").strip() or \
+                    (LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo")
+            for i, c in enumerate(calls):
+                nombre = c["function"]["name"]
+                fn = self._fns.get(nombre)
+                args = c["function"].get("arguments") or {}
+                if fn is None:
+                    result = f"(funcion desconocida: {nombre})"
+                else:
+                    try:
+                        result = fn(**args)
+                    except Exception as e:
+                        result = f"(error en {nombre}: {e})"
+                self.messages.append({"role": "tool", "tool_call_id": f"c{i}",
+                                      "_name": nombre, "content": str(result)})
+        return LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo"
+
     def _run_claude_cli(self, backend) -> str:
         """Sin herramientas: arma un prompt de texto y llama al CLI `claude -p`
         (usa la suscripción de Wilmer). Solo responde habla, no ejecuta acciones."""
@@ -615,6 +705,18 @@ class Brain:
         import time
         LAST_ACTIONS.clear()
         self._trim_history()
+        # La dieta se aplica SIEMPRE, también con el cerebro de casa.
+        #
+        # Aquí me equivoqué y lo pagué en la prueba: pensé que en local convenía
+        # el prompt entero y fijo, para que Ollama reaprovechara su caché. Pero
+        # con las 57 herramientas y 9.400 tokens, jarvis-light se ahoga: contesta
+        # un saludo genérico en vez de lo que se le pregunta, y tarda 62 s. Con
+        # la dieta —40 herramientas y 6.000 tokens— acierta y tarda un segundo.
+        #
+        # La caché sigue funcionando: el caso corriente es solo el núcleo, que no
+        # cambia entre turnos. Se paga el procesado otra vez cuando entra o sale
+        # un grupo, y eso es un turno lento de vez en cuando, no una respuesta
+        # equivocada siempre.
         activos = None
         if self._dieta is not None:
             try:
@@ -639,6 +741,8 @@ class Brain:
             try:
                 if b["kind"] == "openai":
                     return self._run_openai(b)
+                if b["kind"] == "ollama":
+                    return self._run_ollama(b)
                 return self._run_claude_cli(b)
             except Exception as e:
                 last_err = e

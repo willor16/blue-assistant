@@ -44,13 +44,48 @@ def _window_open(cls: str) -> bool:
 BUBBLE_QML = str(Path.home() / ".local/share/blue/ui/shell.qml")
 JARVIS_DIR = Path(__file__).resolve().parent
 
+LOCK_FILE = CONFIG_DIR / "daemon.lock"
+_cerrojo = None            # se guarda aquí para que el fd viva todo el proceso
+
+
+def _es_blue(pid: int) -> bool:
+    """¿Ese PID es de verdad un daemon nuestro, o un número reciclado?"""
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+    except Exception:
+        return False
+    return "blue.py" in cmd and "daemon" in cmd
+
+
 def _daemon_alive() -> bool:
     try:
         pid = int(PID_FILE.read_text().strip())
         os.kill(pid, 0)                    # señal 0 = solo comprueba que existe
-        return True
+        return _es_blue(pid)
     except Exception:
         return False
+
+
+def tomar_cerrojo() -> bool:
+    """Coge el cerrojo del daemon. False = ya hay otro corriendo.
+
+    Es un flock: lo suelta el kernel cuando el proceso muere, así que no se
+    queda atascado ni aunque el daemon se caiga de mala manera. El PID_FILE
+    sirve para hablar con él (señales); el cerrojo es quien manda.
+    """
+    global _cerrojo
+    import fcntl
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    _cerrojo = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(_cerrojo.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _cerrojo.close()
+        _cerrojo = None
+        return False
+    _cerrojo.write(f"{os.getpid()}\n")
+    _cerrojo.flush()
+    return True
 
 def ensure_daemon() -> bool:
     """Arranca el daemon si está apagado. Devuelve True si tuvo que arrancarlo."""
@@ -173,6 +208,15 @@ def main():
         import voice
         from assistant import Assistant
         import web
+
+        if not tomar_cerrojo():
+            otro = ""
+            try:
+                otro = f" (PID {PID_FILE.read_text().strip()})"
+            except Exception:
+                pass
+            print(f"Ya hay un asistente en marcha{otro}. No arranco otro.")
+            return
 
         if FIFO.exists():
             FIFO.unlink()
