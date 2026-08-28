@@ -192,7 +192,7 @@ def list_agenda() -> str:
     return _log(agenda.list_events())
 
 def dev_task(instruction: str) -> str:
-    "Tarea PESADA delegada a Claude Code (lee/escribe archivos en un proyecto, corre tests, programa una app/función, redacta documentos largos, investiga a fondo en internet). Úsala SOLO para trabajo real multi-paso sobre archivos o proyectos. NO la uses para cálculos de ingeniería ni para graficar: esos van por engineering_calc y engineering_plot (locales, gratis e instantáneos). Devuelve el resultado ya resumido."
+    "Tarea PESADA delegada a ÉREBO (lee/escribe archivos en un proyecto, corre tests, programa una app/función, redacta documentos largos, investiga a fondo en internet). Úsala SOLO para trabajo real multi-paso sobre archivos o proyectos. NO la uses para cálculos de ingeniería ni para graficar: esos van por engineering_calc y engineering_plot (locales, gratis e instantáneos). Devuelve el resultado ya resumido."
     import tasks
     res = tasks.run_task(instruction)
     if res.get("confirm"):
@@ -201,13 +201,13 @@ def dev_task(instruction: str) -> str:
 
 
 def consultar_orfeo(pregunta: str) -> str:
-    "Le pasa una pregunta a ORFEO (jarvis-heavy, el modelo grande que corre en el Ollama de la otra PC de Wilmer) y devuelve su razonamiento en texto. Úsala cuando haga falta pensar largo y a fondo: una explicación teórica densa, un análisis con matices, comparar alternativas, un problema conceptual duro. ORFEO no toca el escritorio ni ejecuta nada, solo piensa y devuelve texto. TARDA entre 20 segundos y 2 minutos, así que avisa a Wilmer antes de llamarla. NO la uses para cálculos de ingeniería (usa engineering_calc), ni para trabajo sobre archivos (usa dev_task), ni para preguntas normales que ya sabes contestar tú."
+    "Le pasa una pregunta a ORFEO, el cerebro que piensa despacio, y devuelve su razonamiento en texto. Úsala cuando haga falta pensar largo y a fondo: una explicación teórica densa, un análisis con matices, comparar alternativas, un problema conceptual duro. ORFEO no toca el escritorio ni ejecuta nada, solo piensa y devuelve texto. TARDA entre 20 segundos y 2 minutos, así que avisa a Wilmer antes de llamarla. NO la uses para cálculos de ingeniería (usa engineering_calc), ni para trabajo sobre archivos (eso es de ÉREBO, usa dev_task), ni para preguntas normales que ya sabes contestar tú."
     import cerebros
     return _log(cerebros.consultar_orfeo(pregunta))
 
 
 def consultar_icaro(instruccion: str) -> str:
-    "Le encarga algo a ICARO (Hermes Agent, un agente con sus propias herramientas). Úsala solo si Wilmer lo pide por su nombre o si hace falta un agente autonomo distinto a Claude Code."
+    "Le encarga algo a ICARO, el cerebro que hace encargos por su cuenta con sus propias herramientas. Usala solo si Wilmer lo pide por su nombre."
     import cerebros
     return _log(cerebros.consultar_icaro(instruccion))
 
@@ -320,7 +320,7 @@ PERSONALIDAD: confianzudo, sarcástico y gracioso SIEMPRE, pero eficiente y serv
 
 CORREO/AGENDA/TAREAS: para revisar correo usa check_mail; para enviar uno redacta tú el cuerpo y usa send_email. Agenda con add_agenda/list_agenda. Para trabajo pesado (programar, correr tests, redactar documentos largos, investigar a fondo) usa dev_task con una instrucción clara; si dev_task devuelve algo que empieza con "CONFIRMAR:", repite esa parte pidiéndole permiso a Wilmer antes de continuar.
 
-INGENIERÍA: tienes un toolbox para termodinámica, motores, mecánica de fluidos, instalaciones, instrumentación y estructural. Conversiones -> convert_units. Propiedades termo rápidas (vapor, refrigerantes, gases) -> thermo_property. Cualquier cuenta de ingeniería (termo, fluidos con 'fluids', transf. calor con 'ht', estructural con FEModel3D, unidades con 'u') -> engineering_calc armando código Python. Para GRAFICAR o visualizar (curvas, diagramas T-s/p-h, momento/cortante, esfuerzo vs longitud, comparativas) -> engineering_plot armando código con plt; la imagen se abre sola, no describas la gráfica como si no existiera. Un cálculo o una gráfica de ingeniería NUNCA va por dev_task (eso gasta de más): usa engineering_calc / engineering_plot, son locales e instantáneos. Solo un ANÁLISIS FEM 3D completo con geometría STEP (importar, material, malla, cargas, resolver) va por dev_task (Claude Code lo corre en FreeCAD), NO con esas tools. Da resultados con unidades claras; para estudio, explica breve el concepto si Wilmer lo pide.
+INGENIERÍA: tienes un toolbox para termodinámica, motores, mecánica de fluidos, instalaciones, instrumentación y estructural. Conversiones -> convert_units. Propiedades termo rápidas (vapor, refrigerantes, gases) -> thermo_property. Cualquier cuenta de ingeniería (termo, fluidos con 'fluids', transf. calor con 'ht', estructural con FEModel3D, unidades con 'u') -> engineering_calc armando código Python. Para GRAFICAR o visualizar (curvas, diagramas T-s/p-h, momento/cortante, esfuerzo vs longitud, comparativas) -> engineering_plot armando código con plt; la imagen se abre sola, no describas la gráfica como si no existiera. Un cálculo o una gráfica de ingeniería NUNCA va por dev_task (eso gasta de más): usa engineering_calc / engineering_plot, son locales e instantáneos. Solo un ANÁLISIS FEM 3D completo con geometría STEP (importar, material, malla, cargas, resolver) va por dev_task (ÉREBO lo corre en FreeCAD), NO con esas tools. Da resultados con unidades claras; para estudio, explica breve el concepto si Wilmer lo pide.
 
 DOCUMENTOS Y ESPACIOS (RAG): los documentos de Wilmer se organizan por CONTENEDORES en su taxonomía (cursos de la universidad, proyectos de la universidad, trabajos, estudio externo). Comandos:
 - "tengo/hay un nuevo curso/proyecto/trabajo X" o "crea un curso X" -> crear_espacio(tipo, X): crea su carpeta y lo registra. Luego él suelta archivos ahí.
