@@ -200,6 +200,18 @@ def dev_task(instruction: str) -> str:
     return res.get("text", "") or "Sin resultado."
 
 
+def consultar_orfeo(pregunta: str) -> str:
+    "Le pasa una pregunta a ORFEO (jarvis-heavy, el modelo grande que corre en el Ollama de la otra PC de Wilmer) y devuelve su razonamiento en texto. Úsala cuando haga falta pensar largo y a fondo: una explicación teórica densa, un análisis con matices, comparar alternativas, un problema conceptual duro. ORFEO no toca el escritorio ni ejecuta nada, solo piensa y devuelve texto. TARDA entre 20 segundos y 2 minutos, así que avisa a Wilmer antes de llamarla. NO la uses para cálculos de ingeniería (usa engineering_calc), ni para trabajo sobre archivos (usa dev_task), ni para preguntas normales que ya sabes contestar tú."
+    import cerebros
+    return _log(cerebros.consultar_orfeo(pregunta))
+
+
+def consultar_icaro(instruccion: str) -> str:
+    "Le encarga algo a ICARO (Hermes Agent, un agente con sus propias herramientas). Úsala solo si Wilmer lo pide por su nombre o si hace falta un agente autonomo distinto a Claude Code."
+    import cerebros
+    return _log(cerebros.consultar_icaro(instruccion))
+
+
 def remember(text: str) -> str:
     "Guarda en tu memoria PERSISTENTE (entre sesiones) un dato sobre Wilmer o su trabajo: una preferencia, un dato de un proyecto, una decisión, un gusto, su forma de trabajar. text: el hecho en una frase clara. Úsala cuando Wilmer te cuente algo que valga la pena recordar a futuro."
     import memory
@@ -299,6 +311,7 @@ TOOLS = [
     ver_pantalla,
     crear_espacio, listar_espacios, indexar_apuntes,
     indexar_documentos, consultar_documentos,
+    consultar_orfeo, consultar_icaro,
 ]
 
 SYSTEM_PROMPT = """Eres BLUE, el asistente de voz de Wilmer en Linux (CachyOS/Hyprland).

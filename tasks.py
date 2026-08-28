@@ -16,7 +16,7 @@ import config
 
 # disparadores explícitos: solo entra en "modo tarea" si lo pides claramente
 _TRIGGERS = re.compile(
-    r"^(tarea[:,]?\s|usa\s+claude\s+code|con\s+claude\s+code|usa\s+el\s+bueno|"
+    r"^([hj]?[eé]rebo[,:\s]|tarea[:,]?\s|usa\s+claude\s+code|con\s+claude\s+code|usa\s+el\s+bueno|"
     r"usa\s+sonnet|investiga\b|invest[ií]game\b|invest[ií]ga\w*\s+(en|sobre)\b|"
     r"redacta\b|red[aá]ctame\b|escr[ií]beme\s+(un|una|el|la)\b|"
     r"hazme\s+(un|una|el|la)\s+(cronograma|documento|tabla|resumen|script|programa|"
@@ -28,7 +28,7 @@ _TRIGGERS = re.compile(
     re.IGNORECASE)
 
 _STRIP_PREFIX = re.compile(
-    r"^(tarea[:,]?\s+|usa\s+claude\s+code[,:]?\s+|con\s+claude\s+code[,:]?\s+|"
+    r"^([hj]?[eé]rebo[,:.\s]+|tarea[:,]?\s+|usa\s+claude\s+code[,:]?\s+|con\s+claude\s+code[,:]?\s+|"
     r"usa\s+el\s+bueno[,:]?\s+|usa\s+sonnet[,:]?\s+)", re.IGNORECASE)
 
 _GUARD = (

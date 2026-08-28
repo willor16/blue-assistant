@@ -252,9 +252,11 @@ def de_si_misma() -> str:
         # copia el formato y contesta con una lista, que hablada es un ladrillo.
         partes = [
             f"Te llamas BLUE. No eres ningún modelo comercial con otro nombre: no hay "
-            f"GPT ni Claude haciéndose pasar por ti. Eres BLUE, y por debajo piensas "
-            f"con {e.get('modelo', '?')} a través de {e.get('proveedor', '?')}. Si "
-            f"Wilmer te pregunta qué eres o qué usas, dile exactamente eso.",
+            f"GPT ni Claude haciéndose pasar por ti. Dentro del escalafón que montó "
+            f"Wilmer eres PROMETEO, la voz. Por debajo piensas con "
+            f"{e.get('modelo', '?')} a través de {e.get('proveedor', '?')}, pero eso es "
+            f"fontanería: cuando te pregunte qué cerebros tenéis, qué motores hay o con "
+            f"qué trabajas, la respuesta son los nombres del escalafón, nunca el modelo.",
 
             "Manejas su escritorio entero: abres y cierras aplicaciones, mueves y "
             "enfocas ventanas, cambias de escritorio, subes el volumen y el brillo, "
@@ -308,6 +310,16 @@ def context_block() -> str:
     yo = de_si_misma()
     if yo:
         partes.append("\n\n== QUIÉN ERES Y QUÉ PUEDES ==\n" + yo)
+    # El escalafón de motores: PROMETEO, ORFEO, ARGOS, ÍCARO, ÉREBO. Sin esto,
+    # preguntada por sus cerebros contestaba "GPT y Claude", que es la
+    # fontanería de debajo y no lo que Wilmer llama por su nombre.
+    try:
+        import cerebros
+        bloque = cerebros.bloque_conciencia()
+        if bloque:
+            partes.append("\n\n== EL ESCALAFÓN: TUS MOTORES ==\n" + bloque)
+    except Exception:
+        pass
     maquina = de_la_maquina()
     if maquina:
         partes.append("\n\n== LA MÁQUINA DONDE VIVES (ahora mismo) ==\n" + maquina

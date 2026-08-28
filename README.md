@@ -39,6 +39,45 @@ proyecto, correr tests, análisis FEM en FreeCAD.
 
 ---
 
+## El escalafón
+
+Wilmer le puso nombre clave a cada motor, y son **palabras reservadas**: al
+nombrarlos en voz alta el trabajo se va a ese motor. La regla que manda sobre
+todas es que **PROMETEO es la única voz** — los demás piensan o programan, pero
+quien habla siempre es ella, y cuenta lo suyo con su propio carácter.
+
+| Nombre | Qué es | Para qué |
+|---|---|---|
+| **PROMETEO** | El cerebro del proveedor configurado (por defecto `gpt-oss-120b` en Groq) | La voz. Conversa, maneja el escritorio, tiene las 55 herramientas |
+| **ORFEO** | `jarvis-heavy` en el Ollama de la otra PC | Razonar largo y sin prisa. No toca el escritorio |
+| **ARGOS** | Reservado | El nombre está guardado; el motor no existe todavía |
+| **ÍCARO** | Hermes Agent, con perfil propio en `~/.config/blue/hermes` | Agente con herramientas propias |
+| **ÉREBO** | Claude Code | Programar de verdad: archivos, tests, FEM |
+
+```
+Orfeo, explícame por qué Bernoulli falla en flujo viscoso
+pregúntale a Orfeo cómo se dimensiona una bomba centrífuga
+Érebo, arregla los tests del proyecto
+Ícaro, busca esto y déjamelo en un archivo
+qué cerebros tenemos            ← pregunta por ellos, no los invoca
+```
+
+Preguntar **por** un motor no lo llama. "Qué es ORFEO" o "cuéntame el mito de
+Prometeo" los contesta PROMETEO; hace falta dirigirse a ellos, al principio de
+la frase o detrás de un encargo ("pregúntale a…", "que lo vea…", "pásaselo a…").
+
+**Sobre PROMETEO y la "versión light".** En el asistente viejo PROMETEO era
+literalmente `jarvis-light`, porque ahí el modelo local era el que conversaba.
+Aquí el que conversa es el del proveedor en la nube, el único que sabe llamar
+herramientas: bajarlo a `jarvis-light` dejaría a BLUE sin manos. PROMETEO
+conserva su papel — la voz —, no su modelo.
+
+PROMETEO también puede consultarles por su cuenta, sin que se lo pidas: tiene
+`consultar_orfeo` y `consultar_icaro` entre sus herramientas, y avisa antes de
+llamarlas porque ORFEO tarda de veinte segundos a un par de minutos.
+
+---
+
 ## Cómo se comporta
 
 **Habla como alguien, no como un documento.** Lo que dice pasa por dos filtros
@@ -181,6 +220,7 @@ recuérdame a las seis revisar el correo
 | `~/.config/blue/protocols.json` | Tus protocolos y proyectos |
 | `~/.config/blue/rag.db` | El índice de tus documentos |
 | `~/.config/blue/agenda.json` | Tu agenda |
+| `~/.config/blue/hermes/` | El perfil de Hermes que usa ÍCARO |
 
 Nada de eso viaja al repositorio: son tuyos y de esa máquina.
 
@@ -218,5 +258,6 @@ Lo demás son las herramientas por área: `actions.py` (escritorio),
 `agenda.py`, `mailbox.py`, `memory.py`, `vision.py`, `tasks.py` (Claude Code).
 
 Y tres piezas de comportamiento: `conciencia.py` (qué sabe de sí misma y de la
-máquina), `avisos.py` (señales de vida cuando tarda), `estilo.py` + `texto.py`
+máquina), `avisos.py` (señales de vida cuando tarda),
+`cerebros.py` (el escalafón: quién es cada motor y cómo se le llama), `estilo.py` + `texto.py`
 (que suene a alguien hablando).

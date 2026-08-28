@@ -33,6 +33,10 @@ DEFAULTS = {
     # Umbral de voz. "auto" lo calcula del ruido de fondo de tu cuarto; un
     # número fijo (p.ej. 0.012) lo deja clavado.
     "escucha_umbral": "auto",
+    # --- el escalafón de motores (cerebros.py) ---
+    # Dónde vive el Ollama de la otra PC: de ahí salen ORFEO (jarvis-heavy)
+    # e ÍCARO (Hermes apuntando al mismo sitio).
+    "ollama_host": "http://192.168.0.22:11434",
     # --- conversación continua ---
     "converse_turns": 6,                 # turnos seguidos antes de volver a dormir
     "converse_timeout": 7.0,             # seg. esperando que sigas hablando

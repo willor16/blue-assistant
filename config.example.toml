@@ -78,3 +78,9 @@ api_key = ""
 [[brain]]
 provider = "claude-cli"
 model = "claude-haiku-4-5"
+
+# --- El escalafón de motores -----------------------------------------------
+# PROMETEO (la voz, el proveedor de arriba) · ORFEO (jarvis-heavy en Ollama)
+# ARGOS (reservado) · ÍCARO (Hermes Agent) · ÉREBO (Claude Code)
+# Dónde vive el Ollama del que salen ORFEO e ÍCARO:
+ollama_host = "http://192.168.0.22:11434"

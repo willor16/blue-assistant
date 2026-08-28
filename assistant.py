@@ -82,16 +82,24 @@ class Assistant:
                 self._pending_task = None
                 reply = "Va, lo dejo así, Wilmer. Tú mandas."
             else:
-                reply = router.fast_route(text)   # ya viene con personalidad
-                if reply is None:
-                    instr = tasks.detect(text)
-                    if instr:                     # tarea pesada -> Claude Code
-                        reply = self._compose_task_reply(tasks.run_task(instr), instr)
-                    else:
-                        try:
-                            reply = self.brain().think(text)
-                        except Exception as e:
-                            reply = f"{lines.error_line()} ({e})"
+                # ¿llamó a un motor por su nombre clave? ARGOS y los caídos se
+                # cierran aquí; ORFEO e ÍCARO reescriben `text` para que sea
+                # PROMETEO quien lo cuente. No se sale por la puerta de atrás:
+                # la respuesta tiene que pasar igual por el bloque que habla.
+                text, cerrada = self._escalafon(text)
+                if cerrada is not None:
+                    reply = cerrada
+                else:
+                    reply = router.fast_route(text)   # ya viene con personalidad
+                    if reply is None:
+                        instr = tasks.detect(text)
+                        if instr:                 # tarea pesada -> Claude Code
+                            reply = self._compose_task_reply(tasks.run_task(instr), instr)
+                        else:
+                            try:
+                                reply = self.brain().think(text)
+                            except Exception as e:
+                                reply = f"{lines.error_line()} ({e})"
             store.add("asistente", reply)
             if speak:
                 import voice
@@ -105,6 +113,10 @@ class Assistant:
     def _respond(self, text: str) -> str:
         import lines
         store.add("tú (voz)", text)
+        text, cerrada = self._escalafon(text)   # ¿llamó a un motor por su nombre?
+        if cerrada is not None:
+            store.add("asistente", cerrada)
+            return cerrada
         reply = router.fast_route(text)       # ya viene con personalidad si aplica
         if reply is None:
             try:
@@ -113,6 +125,65 @@ class Assistant:
                 reply = f"{lines.error_line()} ({e})"
         store.add("asistente", reply)
         return reply
+
+    # -------------------------------------------- palabras reservadas: el escalafón
+    def _escalafon(self, text: str):
+        """PROMETEO, ORFEO, ARGOS, ÍCARO, ÉREBO — nombrarlos manda el trabajo allí.
+
+        Devuelve (texto_para_el_cerebro, respuesta_ya_cerrada). Si lo segundo no
+        es None, ya está todo dicho.
+
+        La regla de Wilmer manda: trabaje quien trabaje por debajo, la voz es
+        siempre PROMETEO. Por eso lo que devuelven ORFEO e ÍCARO no se suelta
+        tal cual; se le entrega al cerebro para que lo cuente con su carácter.
+        ÉREBO no pasa por aquí: lo caza tasks.detect() antes, y así se queda con
+        toda la maquinaria de tarea pesada y sus avisos hablados.
+        """
+        try:
+            import cerebros
+        except Exception:
+            return text, None
+        encontrado = cerebros.detectar(text)
+        if not encontrado:
+            return text, None
+        nombre, encargo = encontrado
+
+        if nombre == "PROMETEO":               # ya eres tú: sigue como siempre
+            return (encargo or text), None
+
+        if nombre == "ARGOS":
+            return text, ("ARGOS de momento es solo el nombre, Wilmer. Lo tienes "
+                          "apartado pero todavía no hay motor detrás. Si quieres "
+                          "algo pensado a fondo te lo paso a ORFEO, que para eso "
+                          "es el que hay.")
+
+        if not encargo:
+            quien = {"ORFEO": "ORFEO", "ICARO": "ÍCARO"}.get(nombre, nombre)
+            return text, f"Te escucho, pero no me dijiste qué le encargo a {quien}."
+
+        estado = cerebros.disponibles()
+        if not estado.get(nombre, {}).get("ok"):
+            detalle = estado.get(nombre, {}).get("detalle", "")
+            quien = cerebros.BONITO.get(nombre, nombre)
+            return text, (f"{quien} no está disponible ahora mismo: {detalle}. "
+                          f"¿Quieres que lo resuelva yo?")
+
+        if nombre == "ORFEO":
+            crudo = cerebros.consultar_orfeo(encargo)
+            return ("Wilmer le encargó esto a ORFEO: " + encargo
+                    + "\n\nORFEO ha devuelto esto:\n" + crudo
+                    + "\n\nAhora cuéntaselo tú, como PROMETEO. No leas su texto tal "
+                      "cual ni hables en su nombre: quédate con lo que importa y "
+                      "dilo con tus palabras. Menciona de pasada que lo consultaste "
+                      "con ORFEO."), None
+
+        if nombre == "ICARO":
+            crudo = cerebros.consultar_icaro(encargo)
+            return ("Wilmer le encargó esto a ÍCARO: " + encargo
+                    + "\n\nÍCARO ha devuelto esto:\n" + crudo
+                    + "\n\nCuéntaselo tú, como PROMETEO, con tus palabras y breve."), None
+
+        return text, None
 
     # ---------------------------------------- afirmación / negación (confirmaciones)
     _YES = ("si", "sí", "dale", "hazlo", "házlo", "confirmo", "claro", "adelante",
