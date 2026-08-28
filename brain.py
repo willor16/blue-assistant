@@ -379,6 +379,10 @@ PROVIDERS = {
     "mistral":    "https://api.mistral.ai/v1",
     # gemini también expone un endpoint compatible con OpenAI
     "gemini":     "https://generativelanguage.googleapis.com/v1beta/openai/",
+    # el Ollama de la otra PC de Wilmer. Sin cupo y sin nube: es la red de
+    # seguridad de verdad, la que deja a BLUE con manos cuando se acaba el
+    # diario de los de pago. Más lento, pero nunca dice que no puede hacer nada.
+    "ollama":     "",          # se resuelve en tiempo real desde config
 }
 
 _TYPE_MAP = {int: "integer", float: "number", bool: "boolean", str: "string"}
@@ -471,9 +475,23 @@ class Brain:
                  "kind": "claude_cli" if prov == "claude-cli" else "openai",
                  "cooldown_until": 0.0, "client": None}
             if b["kind"] == "openai":
-                b["client"] = OpenAI(api_key=spec.get("api_key", ""),
-                                     base_url=PROVIDERS.get(prov, PROVIDERS["groq"]),
-                                     timeout=30.0)
+                espera = 30.0
+                if prov == "ollama":
+                    # OJO: PROVIDERS["ollama"] va vacío a propósito (el host sale
+                    # de la configuración), y una cadena vacía es falsa, así que
+                    # un `or` la saltaba y acababa apuntando a Groq.
+                    base = spec.get("base_url")
+                    if not base:
+                        try:
+                            import cerebros
+                            base = cerebros.ollama_host() + "/v1"
+                        except Exception:
+                            base = "http://192.168.0.22:11434/v1"
+                    espera = 240.0    # cargar 20 GB y responder no cabe en 30 s
+                else:
+                    base = spec.get("base_url") or PROVIDERS.get(prov) or PROVIDERS["groq"]
+                b["client"] = OpenAI(api_key=spec.get("api_key") or "ollama",
+                                     base_url=base, timeout=espera)
             self.backends.append(b)
         self._fns = {f.__name__: f for f in TOOLS}
         self._todos_esquemas = _build_schemas()

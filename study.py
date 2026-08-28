@@ -74,7 +74,7 @@ def new(category: str, name: str) -> str:
     if not cat:
         return (f"No sé en qué grupo va '{category}', Wilmer. Dime si es un curso, "
                 f"un proyecto, un trabajo o estudio externo.")
-    name = (name or "").strip()
+    name = limpia_nombre(name)
     if not name:
         return f"¿Qué nombre le pongo al {CATS[cat]['label']}, Wilmer?"
     meta = CATS[cat]
@@ -135,3 +135,27 @@ def index_notes(name: str = "") -> str:
         return ("No me dijiste qué carpeta indexar y no hay proyecto activo, "
                 "Wilmer. Dime 'indexa mis apuntes de <curso>'.")
     return rag.index(wd)
+
+
+# ── el nombre que dicta la voz ─────────────────────────────────────────────
+# "crea un proyecto que se llame ensayo esp32" acababa creando una carpeta
+# llamada literalmente "que se llame ensayo esp32". El modelo pasa el trozo de
+# frase entero, así que el relleno se quita aquí, que es por donde pasa todo.
+import re as _re
+
+_RELLENO = _re.compile(
+    r"^\s*(?:que\s+se\s+(?:llame|llama|titule|titula)|"
+    r"que\s+se\s+va\s+a\s+llamar|se\s+llama(?:r[aá])?|"
+    r"llamad[oa]|nombrad[oa]|titulad[oa]|"
+    r"(?:con\s+)?(?:el\s+)?nombre\s+(?:de\s+)?|de\s+nombre)\s+",
+    _re.IGNORECASE)
+
+
+def limpia_nombre(nombre: str) -> str:
+    """Quita el relleno con el que la voz introduce un nombre."""
+    n = (nombre or "").strip().strip('"').strip("'")
+    anterior = None
+    while n and n != anterior:          # "un proyecto que se llame llamado X"
+        anterior = n
+        n = _RELLENO.sub("", n).strip()
+    return n.strip(" .,:;")

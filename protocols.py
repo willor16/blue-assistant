@@ -37,6 +37,14 @@ def create_protocol(name: str, steps: list[dict], description: str = "",
     para que el proyecto sea un contenedor de contexto (ver workspace.py)."""
     data = load_protocols()
     key = name.lower().strip()
+    # El nombre lo dicta la voz: "un protocolo que se llame estudio" llegaba con
+    # el relleno pegado y se guardaba así. Se limpia por el mismo sitio que en
+    # study.new, para que protocolos y proyectos se llamen igual de bien.
+    try:
+        import study
+        name = study.limpia_nombre(name)
+    except Exception:
+        name = (name or "").strip()
     # validar que las acciones existan
     bad = [s.get("action") for s in steps if s.get("action") not in actions.ACTIONS]
     if bad:
