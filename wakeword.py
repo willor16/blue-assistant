@@ -19,6 +19,13 @@ import sounddevice as sd
 SAMPLE_RATE = 16000
 BLOCK = 1024
 
+# ¿Hay de verdad un detector escuchando ahora mismo? Lo pone a True quien lo
+# arranca. Existe porque conciencia.py miraba la CONFIGURACIÓN (wake_enabled,
+# que viene en True por defecto) y le decía a BLUE que la escucha continua
+# estaba activa. El daemon la retiró hace tiempo por una fuga de memoria, así
+# que BLUE afirmaba oír su nombre cuando no oía nada.
+ACTIVO = False
+
 
 def _norm(text: str) -> str:
     """minúsculas y sin acentos, para comparar palabras."""

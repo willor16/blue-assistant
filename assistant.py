@@ -9,6 +9,7 @@ import store
 
 class Assistant:
     def __init__(self, cfg: dict | None = None):
+        self._pendiente_orfeo = None     # pregunta que se ofreció subir a ORFEO
         self.cfg = cfg or config_mod.load()
         self._lock = threading.Lock()
         self._busy = threading.Lock()      # 1 sola conversación a la vez (mic)
@@ -70,6 +71,8 @@ class Assistant:
         text = (text or "").strip()
         if not text:
             return ""
+        import voice
+        voice.nuevo_turno()          # turno nuevo: se levanta el silencio
         with self._lock:
             import lines
             import tasks
@@ -81,25 +84,32 @@ class Assistant:
             elif self._pending_task and self._is_negation(text):
                 self._pending_task = None
                 reply = "Va, lo dejo así, Wilmer. Tú mandas."
+            elif (_subir := self._acepta_orfeo(text)) is not None:
+                reply = _subir            # dijo que sí a subirlo a ORFEO
             else:
                 # ¿llamó a un motor por su nombre clave? ARGOS y los caídos se
                 # cierran aquí; ORFEO e ÍCARO reescriben `text` para que sea
                 # PROMETEO quien lo cuente. No se sale por la puerta de atrás:
                 # la respuesta tiene que pasar igual por el bloque que habla.
+                original = text
                 text, cerrada = self._escalafon(text)
                 if cerrada is not None:
                     reply = cerrada
                 else:
+                    propio = (text is original)
                     reply = router.fast_route(text)   # ya viene con personalidad
                     if reply is None:
                         instr = tasks.detect(text)
-                        if instr:                 # tarea pesada -> Claude Code
+                        if instr:                 # tarea pesada -> ÉREBO
                             reply = self._compose_task_reply(tasks.run_task(instr), instr)
+                            propio = False
                         else:
                             try:
                                 reply = self.brain().think(text)
                             except Exception as e:
                                 reply = f"{lines.error_line()} ({e})"
+                                propio = False
+                    reply = self._quiza_ofrecer_orfeo(original, reply, propio)
             store.add("asistente", reply)
             if speak:
                 import voice
@@ -113,18 +123,68 @@ class Assistant:
     def _respond(self, text: str) -> str:
         import lines
         store.add("tú (voz)", text)
+
+        # ¿está diciendo que sí a un "¿se la mando a ORFEO?" de hace un momento?
+        subir = self._acepta_orfeo(text)
+        if subir is not None:
+            store.add("asistente", subir)
+            return subir
+
+        original = text
         text, cerrada = self._escalafon(text)   # ¿llamó a un motor por su nombre?
         if cerrada is not None:
             store.add("asistente", cerrada)
             return cerrada
+        propio = (text is original)             # nadie del escalafón se lo llevó
         reply = router.fast_route(text)       # ya viene con personalidad si aplica
         if reply is None:
             try:
                 reply = self.brain().think(text)
             except Exception as e:
                 reply = f"{lines.error_line()} ({e})"
+        reply = self._quiza_ofrecer_orfeo(original, reply, propio)
         store.add("asistente", reply)
         return reply
+
+    # ------------------------------- ¿esto le queda grande a PROMETEO?
+    def _quiza_ofrecer_orfeo(self, pregunta: str, reply: str, propio: bool) -> str:
+        """Contesta PROMETEO y, si la pregunta pedía más cabeza, ofrece pasársela
+        a ORFEO diciendo POR QUÉ. Nunca sube de cerebro por su cuenta: Wilmer
+        quiere decidirlo él, que ORFEO tarda un minuto largo."""
+        self._pendiente_orfeo = None
+        if not propio or not reply:
+            return reply
+        try:
+            import cerebros
+            c = cerebros.complejidad(pregunta)
+            if c["banda"] != "ofrecer":
+                return reply
+            self._pendiente_orfeo = pregunta
+            return reply.rstrip() + cerebros.ofrecimiento(c["razon"])
+        except Exception:
+            return reply
+
+    def _acepta_orfeo(self, text: str):
+        """Si había un ofrecimiento en el aire y dice que sí, se lo manda."""
+        pendiente = getattr(self, "_pendiente_orfeo", None)
+        if not pendiente:
+            return None
+        if self._is_negation(text):
+            self._pendiente_orfeo = None
+            return "Va, lo dejamos así."
+        if not self._is_affirmation(text):
+            return None                      # no era respuesta al ofrecimiento
+        self._pendiente_orfeo = None
+        try:
+            import cerebros
+            crudo = cerebros.consultar_orfeo(pendiente)
+            return self.brain().think(
+                "Wilmer le encargó esto a ORFEO: " + pendiente
+                + "\n\nORFEO ha devuelto esto:\n" + crudo
+                + "\n\nCuéntaselo tú, como PROMETEO, con tus palabras y sin leer "
+                  "su texto tal cual.")
+        except Exception as e:
+            return f"ORFEO no me contestó bien: {e}"
 
     # -------------------------------------------- palabras reservadas: el escalafón
     def _escalafon(self, text: str):
@@ -228,6 +288,7 @@ class Assistant:
             return False                       # ya hay una conversación activa
         try:
             import voice
+            voice.nuevo_turno()          # turno nuevo: se levanta el silencio
             store.set_status("listening")
             audio = voice.record_until_silence()
             if audio.size == 0:
@@ -337,6 +398,7 @@ class Assistant:
         if not self._busy.acquire(blocking=False):
             return                              # ya hay algo en curso
         self._ptt_on = True
+        voice.nuevo_turno()              # turno nuevo: se levanta el silencio
         store.set_status("listening")
         try:
             voice.ptt_start()
@@ -393,6 +455,7 @@ class Assistant:
             store.set_status("speaking")
             voice.speak("¿Sí, Wilmer?", v, eng)
             for _ in range(turns):
+                voice.nuevo_turno()      # cada vuelta es un turno: se puede cortar
                 store.set_status("listening")
                 audio = voice.record_until_silence(start_timeout=timeout)
                 if audio.size == 0:
@@ -442,7 +505,10 @@ class Assistant:
         voice.speak(text, v, eng)
 
     def stop_speaking(self):
+        """El parar de Wilmer (botón de la burbuja, panel, Super+J). Se recuerda:
+        no basta con cortar el audio de ahora, hay que impedir lo que venía
+        detrás. Lo interno que solo corta un aviso usa voice.stop_speaking()."""
         import voice
         import store
-        voice.stop_speaking()
+        voice.interrumpir()
         store.set_status("idle")

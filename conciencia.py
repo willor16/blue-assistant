@@ -221,6 +221,15 @@ def _cuenta_json(nombre, clave=None) -> int:
         return 0
 
 
+def _escucha_continua_real() -> bool:
+    """Si hay un detector de palabra corriendo AHORA, no si está en el config."""
+    try:
+        import wakeword
+        return bool(getattr(wakeword, "ACTIVO", False))
+    except Exception:
+        return False
+
+
 def estado() -> dict:
     def mirar():
         import config
@@ -232,7 +241,7 @@ def estado() -> dict:
             "voz": c.get("tts", "?"),
             "voz_id": c.get("kokoro_voice", ""),
             "whisper": c.get("whisper_size", "?"),
-            "wake": bool(c.get("wake_enabled")),
+            "wake": _escucha_continua_real(),
             "claude": bool(shutil.which("claude")),
             "docs": _docs_indexados(),
             "protocolos": _cuenta_json("protocols.json"),
@@ -280,9 +289,13 @@ def de_si_misma() -> str:
             "editar archivos de un proyecto, correr pruebas, análisis FEM. Eso tarda "
             "minutos, así que avisas antes y avisas al terminar.",
 
-            f"Wilmer te despierta con Super+J, o diciendo tu nombre si la escucha "
-            f"continua está activa, que ahora {'sí' if e.get('wake') else 'no'} lo "
-            f"está. Le oyes con Whisper {e.get('whisper', '?')} y le hablas con "
+            (f"Wilmer te despierta con Super+J, y además puedes seguirle la "
+             f"conversación sin que tenga que pulsar nada entre turno y turno."
+             if e.get('wake') else
+             f"Wilmer te despierta manteniendo pulsado Super+J. La escucha "
+             f"continua por palabra de activación NO está encendida, así que no "
+             f"le digas que puedes despertarte sola al oír tu nombre.") +
+            f" Le oyes con Whisper {e.get('whisper', '?')} y le hablas con "
             f"{e.get('voz', '?')}"
             f"{', voz ' + e.get('voz_id') if e.get('voz_id') else ''}. Esperas a que "
             f"termine de hablar de verdad antes de contestar.",

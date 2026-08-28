@@ -8,6 +8,7 @@ import os
 import queue
 import subprocess
 import sys
+import threading
 import tempfile
 import wave
 from pathlib import Path
@@ -266,6 +267,37 @@ VOICE_CATALOG = {
 
 _play_proc = None        # proceso paplay/ffplay actual (para poder interrumpirlo)
 
+# Interrumpir tenía un agujero de carrera: speak() sintetiza el audio ENTERO
+# antes de crear el proceso que suena, y con Kokoro eso son segundos. Si Wilmer
+# le daba a parar durante ese rato, stop_speaking() no encontraba proceso que
+# matar, no pasaba nada, y BLUE se ponía a hablar acto seguido. Faltaba que la
+# orden de callar se RECORDARA. Eso es _callada: se pone al interrumpir y solo
+# la limpia el turno siguiente.
+_callada = threading.Event()
+_turno = 0
+_turno_lock = threading.Lock()
+
+
+def nuevo_turno() -> int:
+    """Abre un turno nuevo. Levanta el silencio y deja obsoleto lo que quedara
+    por decir del turno anterior."""
+    global _turno
+    with _turno_lock:
+        _turno += 1
+        _callada.clear()
+        return _turno
+
+
+def interrumpir():
+    """Wilmer ha pedido callar. A diferencia de stop_speaking(), esto se
+    recuerda: lo que venga detrás tampoco se dice, hasta el turno siguiente."""
+    _callada.set()
+    stop_speaking()
+
+
+def silenciada() -> bool:
+    return _callada.is_set()
+
 def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
     """Habla 'text'. engine='kokoro' (cálida local) | 'edge' (neural online) | 'piper' (ligero local).
     'voice' es el id correspondiente al motor (ef_dora, es-MX-DaliaNeural, etc)."""
@@ -283,6 +315,10 @@ def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
 
     if not text.strip():
         return
+    if _callada.is_set():            # le dio a parar: ni se sintetiza
+        return
+    with _turno_lock:
+        mi_turno = _turno
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         wav_path = tmp.name
     audio_path = wav_path
@@ -307,6 +343,10 @@ def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
         else:
             ok = _synth_piper(text, voice, wav_path)
         if not ok:
+            return
+        # Sintetizar tarda. Entre que empezó y ahora, Wilmer ha podido pedir
+        # callar o empezar otra pregunta: en ambos casos esto ya no se dice.
+        if _callada.is_set() or mi_turno != _turno:
             return
         # paplay maneja wav; para mp3 (edge) usamos ffplay si está, si no mpv, si no paplay con conversión
         if audio_path.endswith(".mp3"):

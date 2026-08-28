@@ -392,3 +392,71 @@ if __name__ == "__main__":
     print("\n--- estado ---")
     for n, v in disponibles().items():
         print(f"  {BONITO[n]:<10} {'OK ' if v['ok'] else '-- '} {v['detalle']}")
+
+
+# ══════════════════════════════════════════════════════════════
+#  ¿Esto le queda grande a PROMETEO?
+# ══════════════════════════════════════════════════════════════
+# Wilmer no quiere que el enrutado decida por su cuenta subir de cerebro: ORFEO
+# tarda de veinte segundos a dos minutos y no siempre compensa. Quiere que
+# PROMETEO conteste ya y LUEGO le ofrezca la versión larga, diciéndole por qué.
+#
+# La medida es a propósito tonta y explicable. Nada de pedirle al modelo que se
+# autoevalúe: eso gastaría otra llamada entera del cupo diario, que es justo lo
+# que estamos intentando ahorrar.
+
+_PESADAS = (
+    (r"\bpor\s+qu[eé]\b", "pregunta por el porqué"),
+    (r"\bc[oó]mo\s+(funciona|se\s+(deduce|demuestra|obtiene|deriva|dimensiona))",
+     "pide el mecanismo, no el dato"),
+    (r"\b(demuestra|deduce|deriva|justifica|fundamenta|razona)\w*\b", "pide una demostración"),
+    (r"\bcompar\w+|\bdiferencia\w*\s+entre|\bventajas?\s+y\s+desventajas?|"
+     r"\bqu[eé]\s+es\s+mejor|\bcu[aá]l\s+conviene", "pide comparar alternativas"),
+    (r"\ba\s+fondo\b|\ben\s+profundidad\b|\bdetalladamente\b|\bbien\s+explicado\b",
+     "lo pediste a fondo"),
+    (r"\b(hip[oó]tesis|supuestos|limitaciones|cu[aá]ndo\s+(falla|no\s+aplica)|"
+     r"casos?\s+l[ií]mite)\b", "pregunta por hipótesis y límites"),
+    (r"\b(teor[ií]a|te[oó]ric\w+|conceptual\w*|fundamento\w*|primer\w+\s+principi\w+)\b",
+     "es teórica"),
+    (r"\banaliza\w*\b|\bevalu[ae]\w*\b|\bcritica\w*\b|\bpros\s+y\s+contras\b",
+     "pide un análisis"),
+)
+
+# Órdenes de escritorio y consultas de un dato: aquí ORFEO no pinta nada.
+_LIGERAS = re.compile(
+    r"^\s*(abre|cierra|pon|p[oó]n|sube|baja|silencia|enfoca|mueve|"
+    r"p[aá]sate|ve\s+a|copia|pega|captura|apaga|reinicia|suspende|"
+    r"crea\s+(una\s+)?carpeta|ejecuta|activa|lanza|corre|indexa|"
+    r"qu[eé]\s+(hora|d[ií]a|tengo|hay)\b|hola|gracias|buenas)", re.IGNORECASE)
+
+
+def complejidad(texto: str) -> dict:
+    """Devuelve {'banda': trivial|normal|ofrecer, 'motivos': [...], 'razon': str}.
+
+    'ofrecer' significa: contesta tú y, al final, ofrécele pasársela a ORFEO.
+    Nunca significa enrutar solo.
+    """
+    t = (texto or "").strip()
+    if not t or _LIGERAS.match(t):
+        return {"banda": "trivial", "motivos": [], "razon": ""}
+
+    motivos = [por_que for patron, por_que in _PESADAS
+               if re.search(patron, t, re.IGNORECASE)]
+    palabras = len(t.split())
+    if palabras >= 25:
+        motivos.append("la pregunta es larga")
+    if t.count("?") + t.count("¿") >= 3:
+        motivos.append("van varias preguntas juntas")
+
+    if len(motivos) >= 2 or (motivos and palabras >= 12):
+        return {"banda": "ofrecer", "motivos": motivos,
+                "razon": motivos[0]}
+    return {"banda": "normal", "motivos": motivos, "razon": ""}
+
+
+def ofrecimiento(razon: str) -> str:
+    """La frase con la que PROMETEO ofrece subir a ORFEO. Corta, hablada, y
+    diciendo el porqué: Wilmer pidió explícitamente saber por qué no cabe."""
+    return (f" Por cierto, {razon}, y eso es de las cosas que ORFEO hace mejor "
+            f"que yo. Si quieres se la paso y te la desmenuza, aunque tarda un "
+            f"minuto largo. ¿Se la mando?")

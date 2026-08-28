@@ -101,6 +101,24 @@ def main():
                 f.write("listen\n")
         return
 
+    if mode == "converse":
+        # Charla de corrido: responde y sigue escuchando sin volver a pulsar.
+        # El método existía desde hacía tiempo en assistant.py y no lo llamaba
+        # nadie: era código muerto, así que Wilmer nunca pudo conversar.
+        if ensure_daemon():
+            notify("Encendiendo a Blue", "Dame unos segundos y vuelve a intentar")
+            return
+        try:
+            import signal
+            os.kill(int(PID_FILE.read_text().strip()), signal.SIGUSR1)
+        except Exception:
+            pass
+        open_bubble()
+        if FIFO.exists():
+            with open(FIFO, "w") as f:
+                f.write("converse\n")
+        return
+
     if mode in ("ptt-start", "ptt-stop"):
         # push-to-talk: ptt-start al presionar Super+J, ptt-stop al soltar
         if mode == "ptt-start":
@@ -162,7 +180,7 @@ def main():
         PID_FILE.write_text(str(os.getpid()))
 
         # SIGUSR1 = interrumpe la voz en curso (lo manda Super+J)
-        signal.signal(signal.SIGUSR1, lambda *_: voice.stop_speaking())
+        signal.signal(signal.SIGUSR1, lambda *_: voice.interrumpir())
 
         assistant = Assistant(cfg)
         # servidor web (interfaz) en un hilo
@@ -191,6 +209,8 @@ def main():
                         assistant.ptt_start()
                     elif cmd.startswith("ptt-stop"):
                         assistant.ptt_stop()
+                    elif cmd.startswith("converse"):
+                        assistant.converse()
                     elif cmd.startswith("listen"):
                         assistant.handle_voice()
                 except Exception as e:

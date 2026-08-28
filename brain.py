@@ -384,9 +384,29 @@ PROVIDERS = {
 _TYPE_MAP = {int: "integer", float: "number", bool: "boolean", str: "string"}
 
 
-def _system_content() -> str:
+def _prompt_base(activos=None) -> str:
+    """SYSTEM_PROMPT sin los párrafos de los grupos que no viajan en esta llamada.
+
+    Nunca se describe una herramienta que no se manda: si las de ingeniería no
+    van, tampoco va el párrafo que explica cuándo usarlas. Así el recorte no
+    deja al cerebro leyendo instrucciones sobre cosas que no tiene."""
+    if activos is None:
+        return SYSTEM_PROMPT
+    try:
+        import dieta
+        fuera = dieta.secciones_gobernadas() - dieta.secciones_de(activos)
+    except Exception:
+        return SYSTEM_PROMPT
+    if not fuera:
+        return SYSTEM_PROMPT
+    bloques = SYSTEM_PROMPT.split("\n\n")
+    return "\n\n".join(b for b in bloques
+                        if not any(b.startswith(h) for h in fuera))
+
+
+def _system_content(activos=None) -> str:
     """SYSTEM_PROMPT + proyecto activo + memoria persistente del ámbito actual."""
-    out = SYSTEM_PROMPT
+    out = _prompt_base(activos)
     try:
         import workspace
         out += workspace.context_line()
@@ -456,7 +476,16 @@ class Brain:
                                      timeout=30.0)
             self.backends.append(b)
         self._fns = {f.__name__: f for f in TOOLS}
-        self._schemas = _build_schemas()
+        self._todos_esquemas = _build_schemas()
+        self._schemas = list(self._todos_esquemas)
+        # Dieta de tokens: manda solo los grupos de herramientas que la frase
+        # pide. Sin esto iban las 57 en cada llamada, 6.250 tokens fijos, y el
+        # cupo diario se agotaba en unos 21 turnos.
+        try:
+            import dieta
+            self._dieta = dieta.Dieta()
+        except Exception:
+            self._dieta = None
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._degraded = False               # True = corriendo en fallback sin tools
 
@@ -568,8 +597,19 @@ class Brain:
         import time
         LAST_ACTIONS.clear()
         self._trim_history()
+        activos = None
+        if self._dieta is not None:
+            try:
+                nombres = [f.__name__ for f in TOOLS]
+                permitidas, activos = self._dieta.herramientas(user_text, nombres)
+                perm = set(permitidas)
+                self._schemas = [e for e in self._todos_esquemas
+                                 if e["function"]["name"] in perm]
+            except Exception:
+                self._schemas = list(self._todos_esquemas)
+                activos = None
         # refresca el system con la memoria persistente al día (0 ida y vuelta)
-        self.messages[0] = {"role": "system", "content": _system_content()}
+        self.messages[0] = {"role": "system", "content": _system_content(activos)}
         self.messages.append({"role": "user", "content": user_text})
         snap = len(self.messages)                # para limpiar tras un fallo
         now = time.time()
