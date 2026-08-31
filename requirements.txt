@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 addict==2.4.0
 aiohappyeyeballs==2.6.2
 aiohttp==3.13.5
