@@ -10,6 +10,7 @@ Modos:
 """
 from __future__ import annotations
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,10 +29,44 @@ def notify(title: str, body: str = ""):
     subprocess.run(["notify-send", "-a", "Asistente", "-t", "3000", title, body],
                    check=False)
 
+# Navegadores de la familia Chromium: todos aceptan --app= (ventana sin barras).
+# Se prueba en orden y se usa el primero que exista, en vez de exigir
+# google-chrome-stable, que en muchos equipos no esta (aqui hay Brave).
+# OJO con --class: en Wayland estos navegadores lo IGNORAN y se ponen de app_id
+# "<navegador>-<host>__-<perfil>" (p.ej. "brave-127.0.0.1__-Default"). Se pasa
+# igual porque en X11 si funciona, pero la window rule de Hyprland tiene que
+# casar ese otro patron o el panel sale tilado.
+_NAVEGADORES_APP = ("google-chrome-stable", "google-chrome", "chromium",
+                    "brave", "brave-browser", "vivaldi-stable",
+                    "microsoft-edge-stable")
+
+
+def _lanzar(cmd: list[str]) -> None:
+    """Arranca algo y lo desliga de este proceso, que muere en cuanto termina.
+
+    Antes esto se hacia con `hyprctl dispatch exec "cmd con args"`, y dejo de
+    funcionar: Hyprland ya interpreta el argumento de dispatch como Lua, asi que
+    `exec qs -p ...` reventaba con "')' expected near 'qs'" y ni la burbuja ni
+    el panel llegaban a abrirse. Lanzarlo directo no depende de ese parser y
+    ademas funciona fuera de Hyprland.
+    """
+    subprocess.Popen(cmd, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def open_panel():
-    subprocess.run(["hyprctl", "dispatch", "exec",
-                    f"google-chrome-stable --app={PANEL_URL} --class=blue-panel"],
-                   check=False)
+    for navegador in _NAVEGADORES_APP:
+        ruta = shutil.which(navegador)
+        if ruta:
+            _lanzar([ruta, f"--app={PANEL_URL}", "--class=blue-panel"])
+            return
+    # Firefox no tiene --app, pero --kiosk deja la ventana limpia parecida.
+    ruta = shutil.which("firefox")
+    if ruta:
+        _lanzar([ruta, "--kiosk", "--class=blue-panel", PANEL_URL])
+        return
+    import webbrowser
+    webbrowser.open(PANEL_URL)
 
 def _window_open(cls: str) -> bool:
     import json
@@ -102,8 +137,9 @@ def open_bubble():
     r = subprocess.run(["pgrep", "-f", "blue/ui/shell.qml"], capture_output=True)
     if r.returncode == 0:
         return
-    subprocess.run(["hyprctl", "dispatch", "exec", f"qs -p {BUBBLE_QML}"],
-                   check=False)
+    qs = shutil.which("qs") or shutil.which("quickshell")
+    if qs:
+        _lanzar([qs, "-p", BUBBLE_QML])
 
 
 def main():
