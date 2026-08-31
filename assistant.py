@@ -7,6 +7,10 @@ import router
 import store
 
 
+# Tope del push-to-talk. Si nadie suelta la tecla en este tiempo se cierra solo.
+PTT_MAX_S = 120.0
+
+
 class Assistant:
     def __init__(self, cfg: dict | None = None):
         self._pendiente_orfeo = None     # pregunta que se ofreció subir a ORFEO
@@ -409,8 +413,21 @@ class Assistant:
         return len(t) <= 18 and any(p in t for p in self._END_PHRASES)
 
     # ------------------------------------------------ una sola escucha (Super+J)
+    def _avisar_ocupada(self) -> None:
+        """Super+J con un turno ya en marcha. Decirlo, en vez de no hacer nada."""
+        import subprocess
+        estado = store.get_status()
+        que = {"listening": "te estoy escuchando",
+               "thinking": "estoy pensando todavía",
+               "speaking": "estoy hablando"}.get(estado, "estoy ocupada")
+        subprocess.run(["notify-send", "-a", "Blue", "-t", "2000",
+                        "Blue está ocupada", que.capitalize()], check=False)
+
     def handle_voice(self) -> bool:
         if not self._busy.acquire(blocking=False):
+            # Antes esto era mudo: pulsabas Super+J, no pasaba nada, y no habia
+            # forma de saber si te habia oido. Ahora al menos lo dice.
+            self._avisar_ocupada()
             return False                       # ya hay una conversación activa
         try:
             import voice
@@ -448,6 +465,9 @@ class Assistant:
                 self._run_task_voice(instr)
                 return True
             reply = self._responder_avisando(text, v, eng)
+            if store.abortado() or not reply:
+                store.set_status("idle")     # le dio a parar mientras pensaba
+                return False
             store.set_status("speaking")
             voice.speak(reply, v, eng)
             store.set_status("idle")
@@ -533,6 +553,40 @@ class Assistant:
             store.set_status("idle")
             self._ptt_on = False
             self._busy.release()
+            return
+        # Vigia. _busy solo lo soltaba ptt_stop(), asi que si el evento de
+        # soltar la tecla no llegaba nunca (atajo mal puesto, proceso muerto),
+        # Blue quedaba tomada PARA SIEMPRE —todo Super+J posterior devolvia
+        # False en silencio— y el stream seguia acumulando en _ptt_frames a
+        # 64 KB/s. Esto lo cierra solo pasado el tope.
+        import threading as _th
+        self._ptt_watchdog = _th.Timer(PTT_MAX_S, self._ptt_rescate)
+        self._ptt_watchdog.daemon = True
+        self._ptt_watchdog.start()
+
+    def _ptt_rescate(self) -> None:
+        """Nadie solto la tecla en PTT_MAX_S: cerrar y TIRAR lo grabado.
+
+        Se descarta a proposito en vez de llamar a ptt_stop(): eso pondria a
+        Whisper a masticar dos minutos de audio que casi seguro son la sala
+        vacia, y dejaria _busy tomado todo ese rato — o sea, cambiar un cuelgue
+        por otro mas lento. Un rescate tiene que devolver el control YA.
+        """
+        import voice
+        if not getattr(self, "_ptt_on", False):
+            return
+        self._ptt_on = False
+        self._ptt_watchdog = None
+        print(f"(ptt) nadie solto la tecla en {PTT_MAX_S:.0f}s: cierro y descarto")
+        try:
+            voice.ptt_stop()                    # cierra el stream y vacia frames
+        except Exception:
+            pass
+        store.set_status("idle")
+        try:
+            self._busy.release()
+        except RuntimeError:
+            pass                                # ya estaba suelto
 
     def ptt_stop(self) -> None:
         """Suelta Super+J: corta grabación, transcribe, piensa y responde."""
@@ -540,6 +594,10 @@ class Assistant:
         if not getattr(self, "_ptt_on", False):
             return
         self._ptt_on = False
+        w = getattr(self, "_ptt_watchdog", None)
+        if w is not None:
+            w.cancel()                          # llego a tiempo: no hace falta
+            self._ptt_watchdog = None
         try:
             audio = voice.ptt_stop()
             v, eng = self._tts()
@@ -555,6 +613,9 @@ class Assistant:
                 store.set_status("idle")
                 return
             reply = self._responder_avisando(text, v, eng)
+            if store.abortado() or not reply:
+                store.set_status("idle")
+                return
             store.set_status("speaking")
             voice.speak(reply, v, eng)
             store.set_status("idle")
@@ -600,6 +661,8 @@ class Assistant:
                     self._run_task_voice(instr)
                     continue
                 reply = self._responder_avisando(text, v, eng)
+                if store.abortado() or not reply:
+                    break                    # le dio a parar: se acaba la charla
                 store.set_status("speaking")
                 voice.speak(reply, v, eng)
             store.set_status("idle")
@@ -637,4 +700,11 @@ class Assistant:
         import voice
         import store
         voice.interrumpir()
-        store.set_status("idle")
+        # Antes esto ponia "idle" siempre, incluso con un pensamiento en vuelo:
+        # la interfaz decia "Listo" mientras Blue seguia trabajando minutos. Una
+        # peticion HTTP ya lanzada no se puede cortar, asi que se aborta en la
+        # ronda siguiente (brain.py) y hasta entonces se dice la verdad.
+        if store.get_status() == "thinking":
+            store.set_status("thinking", "cancelando…")
+        else:
+            store.set_status("idle")

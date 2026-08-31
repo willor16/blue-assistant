@@ -142,6 +142,32 @@ def open_bubble():
         _lanzar([qs, "-p", BUBBLE_QML])
 
 
+def _mandar(orden: str) -> bool:
+    """Le pasa una orden al daemon por el FIFO, SIN quedarse colgado.
+
+    Abrir un FIFO para escritura bloquea hasta que alguien lo lea. Si el daemon
+    esta vivo pero atascado, el `with open(FIFO, "w")` de antes se quedaba ahi
+    para siempre: cada pulsacion de Super+J dejaba un proceso colgado y no
+    pasaba nada visible. O_NONBLOCK falla al instante con ENXIO si no hay
+    lector, y asi se puede avisar en vez de fingir que todo va bien.
+    """
+    if not FIFO.exists():
+        notify("Blue no está en marcha", "Enciéndela con Super+Ctrl+J")
+        return False
+    try:
+        fd = os.open(str(FIFO), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        notify("Blue no responde", "Está viva pero atascada. Super+Ctrl+J para reiniciarla")
+        return False
+    try:
+        os.write(fd, (orden + "\n").encode())
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
 def main():
     cfg = config.load()
     mode = sys.argv[1] if len(sys.argv) > 1 else "daemon"
@@ -167,9 +193,7 @@ def main():
         # 2) muestra la burbuja flotante (feedback visual de estado)
         open_bubble()
         # 3) pide escuchar (handle_voice graba hasta detectar silencio)
-        if FIFO.exists():
-            with open(FIFO, "w") as f:
-                f.write("listen\n")
+        _mandar("listen")
         return
 
     if mode == "converse":
@@ -185,9 +209,7 @@ def main():
         except Exception:
             pass
         open_bubble()
-        if FIFO.exists():
-            with open(FIFO, "w") as f:
-                f.write("converse\n")
+        _mandar("converse")
         return
 
     if mode in ("ptt-start", "ptt-stop"):
@@ -197,9 +219,7 @@ def main():
                 notify("Encendiendo a Blue", "Dame unos segundos y vuelve a intentar")
                 return                          # esta pulsación no graba aún
             open_bubble()                       # muestra la ventana flotante
-        if FIFO.exists():
-            with open(FIFO, "w") as f:
-                f.write(mode + "\n")
+        _mandar(mode)
         return
 
     if mode == "toggle":
@@ -273,7 +293,11 @@ def main():
         # (El wake-word "Hey Blue" se retiró: consumía RAM/CPU sin parar y tenía
         #  fuga de memoria. Ahora se activa con push-to-talk: mantener Super+J.)
 
-        notify("Blue está listo", "Mantén Super+J para hablar · Super+Shift+J: panel")
+        # Decia "Manten Super+J", que es push-to-talk, pero install.sh y el
+        # README documentan `blue trigger`: se pulsa UNA vez y Blue detecta sola
+        # cuando terminas. La notificacion contradecia a la documentacion y al
+        # comportamiento real.
+        notify("Blue está lista", "Super+J: hablar · Super+Shift+J: panel")
         print(f"Blue listo. Interfaz en {PANEL_URL}")
         try:
             import lines

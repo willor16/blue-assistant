@@ -300,6 +300,8 @@ def nuevo_turno() -> int:
         _turno += 1
         _callada.clear()
         _cancelada.clear()
+        import store
+        store.limpiar_aborto()
         return _turno
 
 
@@ -311,6 +313,8 @@ def interrumpir():
     que es lo que faltaba: parar mientras escuchaba no paraba nada."""
     _callada.set()
     _cancelada.set()
+    import store
+    store.abortar()          # que brain.py deje de pensar en la ronda siguiente
     stop_speaking()
 
 

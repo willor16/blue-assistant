@@ -57,6 +57,31 @@ def narrate(text: str):
         _write_files()
 
 
+# ---------------------------------------------------------------- cancelacion
+# El testigo de "Wilmer ha pedido parar" vive AQUI y no en voice.py porque
+# brain.py tambien tiene que mirarlo, y no puede arrastrar sounddevice ni torch
+# solo para consultar una bandera. store.py es stdlib puro.
+_abortado = threading.Event()
+
+
+def abortar():
+    """Pedir que el turno en curso muera cuanto antes."""
+    _abortado.set()
+
+
+def abortado() -> bool:
+    return _abortado.is_set()
+
+
+def limpiar_aborto():
+    _abortado.clear()
+
+
+def get_status() -> str:
+    with _lock:
+        return _status
+
+
 def set_status(status: str, detail: str = ""):
     global _status, _detail
     with _lock:

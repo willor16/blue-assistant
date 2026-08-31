@@ -770,6 +770,14 @@ class Brain:
     def _run_openai(self, backend) -> str:
         self._degraded = False                   # backend con herramientas: volvimos a la normalidad
         for _ in range(6):                       # rondas máximas de herramientas
+            # Wilmer le dio a parar. No se puede abortar una peticion HTTP ya
+            # lanzada, pero si dejar de encadenar rondas, que es el unico punto
+            # de cancelacion real que tiene esto. Sin el, parar mientras pensaba
+            # dejaba a Blue trabajando hasta 300 s (brain.py:882/912) con la
+            # interfaz diciendo "Listo".
+            import store
+            if store.abortado():
+                return ""
             resp = self._complete(backend)
             msg = resp.choices[0].message
             calls = msg.tool_calls or []
@@ -898,6 +906,14 @@ class Brain:
         self._degraded = False
         url = backend["base"] + "/api/chat"
         for _ in range(6):                       # rondas máximas de herramientas
+            # Wilmer le dio a parar. No se puede abortar una peticion HTTP ya
+            # lanzada, pero si dejar de encadenar rondas, que es el unico punto
+            # de cancelacion real que tiene esto. Sin el, parar mientras pensaba
+            # dejaba a Blue trabajando hasta 300 s (brain.py:882/912) con la
+            # interfaz diciendo "Listo".
+            import store
+            if store.abortado():
+                return ""
             cuerpo = json.dumps({
                 "model": backend["model"],
                 "messages": self._a_ollama(self.messages),
