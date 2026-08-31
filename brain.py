@@ -564,6 +564,38 @@ def _ollama_vivo(base: str, plazo: float = 0.35) -> bool:
         return False
 
 
+_ultima_busqueda = 0.0
+_busqueda_lock = threading.Lock()
+
+
+def _buscar_ollama_en_segundo_plano(backend, cada: float = 120.0) -> None:
+    """Barre la red buscando el Ollama y, si lo encuentra, apunta ahí.
+
+    Con freno: barrer 254 direcciones cuesta ~1,2 s y no tiene sentido hacerlo
+    en cada turno mientras la máquina siga apagada. Va en un hilo aparte para
+    que el turno de ahora no espere: se va a la nube y el siguiente ya aprovecha
+    lo encontrado."""
+    global _ultima_busqueda
+    import time
+    with _busqueda_lock:
+        if time.time() - _ultima_busqueda < cada:
+            return
+        _ultima_busqueda = time.time()
+
+    def _ir():
+        try:
+            import cerebros
+            url = cerebros.buscar_ollama_en_la_red()
+            if url and url.rstrip("/") != backend["base"].rstrip("/"):
+                backend["base"] = url.rstrip("/")
+                backend["cooldown_until"] = 0.0
+                cerebros.recordar_host(url)
+        except Exception:
+            pass
+
+    threading.Thread(target=_ir, daemon=True).start()
+
+
 def _build_schemas():
     """Genera los esquemas de herramientas (formato OpenAI) desde las firmas."""
     import inspect
@@ -622,8 +654,14 @@ class Brain:
                     try:
                         import cerebros
                         base = cerebros.ollama_host()
+                        # Si el configurado no contesta pero ya encontramos otro
+                        # barriendo la red, se arranca directamente con ese.
+                        if not _ollama_vivo(base):
+                            rec = cerebros.host_recordado()
+                            if rec and _ollama_vivo(rec):
+                                base = rec
                     except Exception:
-                        base = "http://192.168.0.22:11434"
+                        base = "http://localhost:11434"
                 b["base"] = base.rstrip("/").removesuffix("/v1")
                 # La ventana del modelo. jarvis-light se carga con 8.192 por
                 # defecto y el prompt de BLUE ya son ~6.400: quedaban menos de
@@ -1002,6 +1040,11 @@ class Brain:
                     if now < b["cooldown_until"]:
                         continue
                     if not _ollama_vivo(b["base"]):
+                        # Puede que la máquina esté apagada... o que el router
+                        # le haya cambiado la IP, que ya nos pasó. Se busca en
+                        # segundo plano: este turno se va a la nube y el
+                        # siguiente ya usa el que se encuentre.
+                        _buscar_ollama_en_segundo_plano(b)
                         b["cooldown_until"] = now + 10    # reintento en 10 s
                         continue
                     b["cooldown_until"] = 0.0             # vivo: se le quita el veto

@@ -50,7 +50,9 @@ CONFIG_DIR = Path.home() / ".config" / "blue"
 HERMES_PERFIL = CONFIG_DIR / "hermes"
 
 # El Ollama de la otra PC. Se puede mover desde config.toml (`ollama_host`).
-OLLAMA_POR_DEFECTO = "http://192.168.0.22:11434"
+# Neutro a propósito: una IP de otra casa no sirve en un equipo nuevo.
+# Si no responde, buscar_ollama_en_la_red() lo encuentra solo.
+OLLAMA_POR_DEFECTO = "http://localhost:11434"
 
 _cache: dict = {}
 
@@ -61,6 +63,69 @@ def _cfg() -> dict:
         return config.load()
     except Exception:
         return {}
+
+
+# ── Encontrar solo el Ollama de la red ─────────────────────────────────────
+# Poner la dirección a mano es la parte que más veces se ha roto. El 30/08/2026
+# el DHCP le cambió la IP al servidor y BLUE se pasó el día creyendo que estaba
+# apagado, tirando de la nube sin avisar. Y en un equipo recién clonado la
+# dirección de otra casa no sirve de nada.
+#
+# Así que si el host configurado no contesta, se barre la red local buscando
+# quién escucha en el 11434 y se recuerda. El barrido va en segundo plano: el
+# turno de ahora se va a la nube y el siguiente ya usa el que se encontró.
+
+def _puerto_abierto(ip: str, puerto: int = 11434, plazo: float = 0.6) -> bool:
+    import socket
+    try:
+        with socket.create_connection((ip, puerto), timeout=plazo):
+            return True
+    except OSError:
+        return False
+
+
+def _mi_red() -> str | None:
+    """El /24 en el que está esta máquina, p.ej. '192.168.0'."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))       # no manda nada, solo elige la ruta
+        ip = s.getsockname()[0]
+        s.close()
+        return ip.rsplit(".", 1)[0]
+    except OSError:
+        return None
+
+
+def buscar_ollama_en_la_red(puerto: int = 11434) -> str | None:
+    """Barre el /24 local buscando un Ollama. Devuelve la URL o None."""
+    import concurrent.futures as cf
+    red = _mi_red()
+    if not red:
+        return None
+    ips = [f"{red}.{i}" for i in range(1, 255)]
+    with cf.ThreadPoolExecutor(max_workers=128) as ex:
+        for ip, abierto in zip(ips, ex.map(lambda x: _puerto_abierto(x, puerto), ips)):
+            if abierto:
+                return f"http://{ip}:{puerto}"
+    return None
+
+
+def host_recordado() -> str | None:
+    """El último Ollama que se encontró barriendo, si lo hubo."""
+    try:
+        t = (CONFIG_DIR / "ollama_encontrado").read_text().strip()
+        return t or None
+    except OSError:
+        return None
+
+
+def recordar_host(url: str) -> None:
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        (CONFIG_DIR / "ollama_encontrado").write_text(url + "\n")
+    except OSError:
+        pass
 
 
 def ollama_host() -> str:

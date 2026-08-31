@@ -1,0 +1,13 @@
+#!/bin/sh
+# BLUE — el asistente de voz de Wilmer.
+#
+#   blue daemon      residente: voz + interfaz web (lo normal, va en exec-once)
+#   blue trigger     dispara una escucha            (Super+J)
+#   blue panel       abre la interfaz gráfica       (Super+Shift+J)
+#   blue toggle      muestra / oculta               (Super+Ctrl+J)
+#   blue stop        lo apaga
+#   blue text "..."  prueba por texto, sin micrófono
+#
+# Código en ~/.local/share/blue/  ·  datos en ~/.config/blue/
+cd "$HOME/.local/share/blue" || exit 1
+exec ./.venv/bin/python blue.py "$@"

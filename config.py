@@ -36,7 +36,9 @@ DEFAULTS = {
     # --- el escalafón de motores (cerebros.py) ---
     # Dónde vive el Ollama de la otra PC: de ahí salen ORFEO (jarvis-heavy)
     # e ÍCARO (Hermes apuntando al mismo sitio).
-    "ollama_host": "http://192.168.0.22:11434",
+    # Si no contesta, BLUE barre la red local buscando quien escuche en
+    # el 11434 y se lo queda. Ponlo por NOMBRE (.local) si lo sabes.
+    "ollama_host": "http://localhost:11434",
     # --- conversación continua ---
     "converse_turns": 6,                 # turnos seguidos antes de volver a dormir
     "converse_timeout": 7.0,             # seg. esperando que sigas hablando

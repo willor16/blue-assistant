@@ -106,6 +106,62 @@ máquina donde vive.
 
 ## Instalación en otro equipo
 
+**Un comando.** El instalador hace lo demás y se puede repetir sin miedo: no
+pisa tu configuración ni rehace lo que ya esté.
+
+```bash
+git clone https://github.com/willor16/blue-assistant.git ~/.local/share/blue
+cd ~/.local/share/blue && ./install.sh
+```
+
+Instala las dependencias del sistema (en Arch/CachyOS), monta el entorno de
+Python, crea tu `config.toml` desde el ejemplo, deja el lanzador en
+`~/.local/bin/blue`, **busca solo si hay un Ollama en tu red local** y te
+imprime los atajos de Hyprland para pegar.
+
+Tiene que vivir en `~/.local/share/blue`: es donde lo buscan el lanzador y los
+atajos. Si lo clonas en otro sitio, el instalador te avisa y para.
+
+Después, solo faltan dos cosas manuales:
+
+1. **Tu clave de Groq** en `~/.config/blue/config.toml`. Es gratis:
+   https://console.groq.com/keys
+2. **Los atajos**, pegando en tu config de Hyprland lo que imprime el
+   instalador.
+
+Y ya:
+
+```bash
+blue daemon &          # la deja corriendo
+blue text "hola"       # le hablas por texto, sin micrófono
+```
+
+La primera vez se descargan los modelos de voz (Kokoro y Whisper), así que esa
+primera respuesta tarda más de lo normal.
+
+### El cerebro
+
+BLUE piensa con un modelo de lenguaje, y tienes dos caminos:
+
+- **Un Ollama en tu red** (lo mejor): gratis, privado y sin tope por minuto. El
+  instalador lo busca solo, y si enciendes la máquina más tarde **BLUE la
+  encuentra sin que le digas nada** — barre la red y se queda con la dirección,
+  así que un cambio de IP del router ya no la deja sin cerebro.
+- **La nube** (Groq gratis, con Gemini y Claude detrás): funciona sin más que
+  la clave, pero Groq limita a 8.000 tokens por minuto y modelo, así que va más
+  lenta a ratos.
+
+Puedes tener los dos: se ponen en orden en `config.toml` y BLUE cae al
+siguiente sola cuando uno falla.
+
+**Si usas Ollama, sube `num_ctx` a 32768** en su `[[brain]]`. Los Modelfile
+suelen fijarlo en 8.192 y el prompt de BLUE con todas sus herramientas son
+~9.600 tokens: no cabe. Ollama al desbordar trunca por el principio, se lleva
+el prompt del sistema, y BLUE parece tonta cuando lo que está es sin
+instrucciones.
+
+### Si prefieres hacerlo a mano
+
 ### 1. Dependencias del sistema
 
 ```bash
