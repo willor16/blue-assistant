@@ -271,6 +271,64 @@ def disponibles(segundos=90) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+#  Cambiar de cerebro cuesta tiempo: hay que DECIRLO antes
+# ══════════════════════════════════════════════════════════════
+# jarvis-light (20 GB) y jarvis-heavy (52 GB) no caben a la vez en la memoria
+# de la Mac Studio, así que llamar a ORFEO obliga a Ollama a descargar uno y
+# cargar el otro: entre 15 y 20 segundos en los que BLUE se quedaba MUDA. Y al
+# volver, la siguiente pregunta normal pagaba la recarga de vuelta.
+#
+# Wilmer lo dijo claro: que le avise de que lo hará pero tardará. Un relleno
+# genérico a los 9 segundos no sirve — para entonces ya lleva 9 segundos
+# preguntándose si se colgó, y la frase no explica nada. Esto avisa ANTES de
+# empezar y dice por qué.
+
+_PS_CACHE = {"t": 0.0, "modelos": frozenset()}
+_PS_TTL = 3.0
+
+
+def modelos_cargados(timeout: float = 2.0) -> frozenset:
+    """Qué modelos tiene Ollama ahora mismo en memoria. Cacheado unos segundos:
+    se consulta justo antes de cada consulta pesada y no vale la pena repetirlo."""
+    import time
+    if time.time() - _PS_CACHE["t"] < _PS_TTL:
+        return _PS_CACHE["modelos"]
+    try:
+        req = urllib.request.Request(ollama_host() + "/api/ps")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode())
+        cargados = frozenset((m.get("name") or "").split(":")[0]
+                             for m in d.get("models", []))
+    except Exception:
+        cargados = frozenset()           # ante la duda, se avisa: mejor de más
+    _PS_CACHE.update(t=time.time(), modelos=cargados)
+    return cargados
+
+
+def hay_que_recargar(modelo: str) -> bool:
+    """¿Llamar a este modelo obliga a Ollama a cargarlo desde cero?"""
+    return (modelo or "").split(":")[0] not in modelos_cargados()
+
+
+_ESPERA_CAMBIO = [
+    "Voy, pero tengo que cambiar de cerebro y eso tarda unos veinte segundos. Dame un momento.",
+    "Puedo, aunque toca cambiar de cerebro. Son unos veinte segundos, no me he colgado.",
+    "Eso se lo paso a {quien}, pero hay que cargarlo primero. Unos veinte segundos y estoy contigo.",
+]
+_ESPERA_YA_CARGADO = [
+    "Voy con ello, dame unos segundos.",
+    "Se lo paso a {quien}, un momento.",
+]
+
+
+def frase_de_espera(modelo: str, quien: str = "otro cerebro") -> str:
+    """Qué decirle a Wilmer ANTES de la consulta pesada, según cueste o no."""
+    import random
+    plantillas = _ESPERA_CAMBIO if hay_que_recargar(modelo) else _ESPERA_YA_CARGADO
+    return random.choice(plantillas).format(quien=quien)
+
+
+# ══════════════════════════════════════════════════════════════
 #  Consultar a ORFEO
 # ══════════════════════════════════════════════════════════════
 _ORFEO_GUARD = (

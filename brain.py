@@ -6,6 +6,7 @@ y protocols.py.
 """
 from __future__ import annotations
 import json
+import threading
 
 import actions
 import protocols
@@ -210,22 +211,120 @@ def listar_carpeta(ruta: str = "") -> str:
     return _log(actions.listar_carpeta(ruta))
 
 
+def borrar(ruta: str) -> str:
+    "Manda un archivo o una carpeta a la PAPELERA. Úsala siempre que Wilmer diga 'borra', 'elimina', 'quita' o 'tira' algo. Va a la papelera del escritorio, así que se puede recuperar: no hace falta que se lo adviertas ni que le pidas confirmación para algo suyo y corriente. ruta: nombre o ruta; si no es absoluta se busca en ~/Documentos. Si no lo encuentras, localízalo antes con buscar_archivo en vez de decir que no existe."
+    return _log(actions.borrar(ruta))
+
+
+def mover(origen: str, destino: str) -> str:
+    "Mueve un archivo o carpeta a otro sitio. destino puede ser una carpeta (se mete dentro) o la ruta nueva completa. Úsala para 'mueve esto a', 'mete esto en', 'saca esto de'."
+    return _log(actions.mover(origen, destino))
+
+
+def renombrar(ruta: str, nombre_nuevo: str) -> str:
+    "Le cambia el nombre a un archivo o carpeta sin sacarlo de su sitio. nombre_nuevo: solo el nombre, sin ruta; si es un archivo se le conserva la extensión aunque Wilmer no la diga."
+    return _log(actions.renombrar(ruta, nombre_nuevo))
+
+
+def copiar(origen: str, destino: str) -> str:
+    "Copia un archivo o carpeta dejando el original donde está. Para 'hazme una copia de', 'duplica'."
+    return _log(actions.copiar(origen, destino))
+
+
+def buscar_archivo(nombre: str, dentro: str = "") -> str:
+    "Busca por nombre dentro de la carpeta personal de Wilmer y devuelve dónde está cada coincidencia. Úsala ANTES de decir que algo no existe, y para saber la ruta exacta antes de mover, renombrar o borrar. dentro: carpeta donde acotar la búsqueda; vacío = toda la casa."
+    return _log(actions.buscar_archivo(nombre, dentro))
+
+
+def leer_archivo(ruta: str, lineas: int = 200) -> str:
+    "Lee un archivo de texto y te devuelve su contenido para que puedas contestar sobre él. Solo texto (txt, md, csv, código, configuración). Para PDF o apuntes usa consultar_documentos; para trabajar sobre un proyecto entero, dev_task."
+    return _log(actions.leer_archivo(ruta, lineas))
+
+
+def escribir_archivo(ruta: str, contenido: str, anexar: bool = False) -> str:
+    "Crea un archivo de texto con el contenido que Wilmer dicte, o le añade texto al final si anexar es true. No pisa un archivo que ya exista: si te dice que ya hay uno, pregúntale si lo anexas o le pones otro nombre."
+    return _log(actions.escribir_archivo(ruta, contenido, anexar))
+
+
 def estado_maquina() -> str:
     "Estado de ESTA computadora ahora mismo: cuánto lleva encendida, memoria y disco libres, carga de CPU, en qué escritorio está, qué ventanas hay abiertas y qué música suena. Úsala cuando Wilmer pregunte por el estado del equipo; esos datos no están en tu contexto porque cambian a cada segundo."
     return _log(actions.estado_maquina())
 
 
 
+# Lo pone el assistant al arrancar: una función que DICE una frase en voz alta.
+# Las consultas pesadas necesitan avisar antes de empezar, y desde aquí no se
+# sabe con qué voz ni con qué motor habla BLUE.
+AVISAR = None
+
+# El último Brain construido. Se usa para recalentar el cerebro titular después
+# de una consulta pesada, sin tener que pasarse la instancia por seis sitios.
+_ACTIVO = None
+
+_pesadas_en_curso = 0
+_pesadas_lock = threading.Lock()
+
+
+def _avisar(frase: str) -> None:
+    """Dice la frase sin bloquear al que la manda."""
+    f = AVISAR
+    if not f or not frase:
+        return
+    try:
+        threading.Thread(target=f, args=(frase,), daemon=True).start()
+    except Exception:
+        pass
+
+
+def _consulta_pesada(modelo: str, quien: str, hacer):
+    """Envuelve una consulta que puede obligar a cambiar de modelo.
+
+    Avisa ANTES si toca recargar (que es lo que Wilmer pidió: que le diga que lo
+    hará pero tardará) y, al terminar, deja el cerebro titular caliente otra vez
+    para que la siguiente pregunta normal no pague la recarga de vuelta."""
+    global _pesadas_en_curso
+    import cerebros
+    try:
+        _avisar(cerebros.frase_de_espera(modelo, quien))
+    except Exception:
+        pass
+    with _pesadas_lock:
+        _pesadas_en_curso += 1
+    try:
+        return hacer()
+    finally:
+        with _pesadas_lock:
+            _pesadas_en_curso -= 1
+            ultima = _pesadas_en_curso == 0
+        # Solo recalienta la última en salir: si Wilmer encadena dos consultas
+        # a ORFEO, recargar en medio sería peor que no hacer nada.
+        if ultima and _ACTIVO is not None:
+            threading.Thread(target=_recalentar_titular, daemon=True).start()
+
+
+def _recalentar_titular() -> None:
+    """Devuelve el cerebro de casa a memoria tras una consulta pesada."""
+    try:
+        with _pesadas_lock:
+            if _pesadas_en_curso:        # empezó otra mientras tanto
+                return
+        _ACTIVO.calentar()
+    except Exception:
+        pass
+
+
 def consultar_orfeo(pregunta: str) -> str:
     "Le pasa una pregunta a ORFEO, el cerebro que piensa despacio, y devuelve su razonamiento en texto. Úsala cuando haga falta pensar largo y a fondo: una explicación teórica densa, un análisis con matices, comparar alternativas, un problema conceptual duro. ORFEO no toca el escritorio ni ejecuta nada, solo piensa y devuelve texto. TARDA entre 20 segundos y 2 minutos, así que avisa a Wilmer antes de llamarla. NO la uses para cálculos de ingeniería (usa engineering_calc), ni para trabajo sobre archivos (eso es de ÉREBO, usa dev_task), ni para preguntas normales que ya sabes contestar tú."
     import cerebros
-    return _log(cerebros.consultar_orfeo(pregunta))
+    return _log(_consulta_pesada(
+        "jarvis-heavy", "ORFEO", lambda: cerebros.consultar_orfeo(pregunta)))
 
 
 def consultar_icaro(instruccion: str) -> str:
     "Le encarga algo a ICARO, el cerebro que hace encargos por su cuenta con sus propias herramientas. Usala solo si Wilmer lo pide por su nombre."
     import cerebros
-    return _log(cerebros.consultar_icaro(instruccion))
+    return _log(_consulta_pesada(
+        "blue-agent", "ÍCARO", lambda: cerebros.consultar_icaro(instruccion)))
 
 
 def remember(text: str) -> str:
@@ -329,11 +428,15 @@ TOOLS = [
     indexar_documentos, consultar_documentos,
     consultar_orfeo, consultar_icaro,
     crear_carpeta, listar_carpeta, estado_maquina,
+    borrar, mover, renombrar, copiar, buscar_archivo,
+    leer_archivo, escribir_archivo,
 ]
 
 SYSTEM_PROMPT = """Eres BLUE, el asistente de voz de Wilmer en Linux (CachyOS/Hyprland).
 
 PERSONALIDAD: confianzudo, sarcástico y gracioso SIEMPRE, pero eficiente y servicial, como un mayordomo brillante con chispa. Nunca grosero. SIEMPRE llamas al usuario "Wilmer" o "jefe". Primero cumples, luego rematas con una broma corta. Si dice algo raro o se equivoca, contéstale con humor. En órdenes serias (apagar, borrar) baja el tono y sé claro.
+
+ARCHIVOS: los archivos y carpetas de Wilmer SÍ los puedes tocar, dentro de su carpeta personal. Crear carpeta con crear_carpeta, ver qué hay con listar_carpeta, encontrar algo con buscar_archivo, y borrar, mover, renombrar, copiar, leer_archivo y escribir_archivo para lo demás. Borrar manda a la papelera y es recuperable, así que hazlo sin ceremonia cuando te lo pida. Si no encuentras algo a la primera, búscalo con buscar_archivo antes de decir que no existe, y no des por hecho el resultado: di lo que la herramienta te devolvió de verdad.
 
 CORREO/AGENDA/TAREAS: para revisar correo usa check_mail; para enviar uno redacta tú el cuerpo y usa send_email. Agenda con add_agenda/list_agenda. Para trabajo pesado (programar, correr tests, redactar documentos largos, investigar a fondo) usa dev_task con una instrucción clara; si dev_task devuelve algo que empieza con "CONFIRMAR:", repite esa parte pidiéndole permiso a Wilmer antes de continuar.
 
@@ -387,7 +490,15 @@ PROVIDERS = {
     # ollama NO va aquí: habla por su API nativa, no por /v1. Ver _run_ollama.
 }
 
-_TYPE_MAP = {int: "integer", float: "number", bool: "boolean", str: "string"}
+# OJO con las claves de texto: arriba está `from __future__ import annotations`,
+# así que inspect devuelve la anotación como la cadena "bool", no como el tipo.
+# Sin las claves de texto, _build_schemas no acertaba NINGUNA y le declaraba al
+# modelo que todo era string: doce parámetros, doce. El daño no es cosmético —
+# take_screenshot(region="false") es verdadero en Python, así que pedir la
+# pantalla entera capturaba una región, y lo mismo con keep_open y anexar.
+_TYPE_MAP = {int: "integer", float: "number", bool: "boolean", str: "string",
+             "int": "integer", "float": "number", "bool": "boolean",
+             "str": "string"}
 
 
 def _prompt_base(activos=None) -> str:
@@ -431,6 +542,26 @@ def _system_content(activos=None) -> str:
     except Exception:
         pass
     return out
+
+
+def _ollama_vivo(base: str, plazo: float = 0.35) -> bool:
+    """¿Está encendida la máquina de los modelos? Se pregunta abriendo un socket.
+
+    El cerebro de casa es el TITULAR: gratis, privado y sin cupo. Pero darlo por
+    muerto durante minutos porque una vez no contestó es justo lo contrario de
+    lo que Wilmer quiere — enciende el servidor y BLUE tiene que usarlo YA, no
+    tres minutos después. Y lanzarle una petición entera para averiguarlo cuesta
+    medio segundo de cada turno. Un connect de 0,35 s resuelve las dos cosas:
+    cuando está apagado se descarta enseguida, y cuando se enciende se nota en
+    el turno siguiente."""
+    import socket
+    from urllib.parse import urlparse
+    u = urlparse(base if "//" in base else "//" + base)
+    try:
+        with socket.create_connection((u.hostname, u.port or 11434), timeout=plazo):
+            return True
+    except OSError:
+        return False
 
 
 def _build_schemas():
@@ -494,10 +625,28 @@ class Brain:
                     except Exception:
                         base = "http://192.168.0.22:11434"
                 b["base"] = base.rstrip("/").removesuffix("/v1")
+                # La ventana del modelo. jarvis-light se carga con 8.192 por
+                # defecto y el prompt de BLUE ya son ~6.400: quedaban menos de
+                # 1.800 de margen para el historial y los resultados de las
+                # herramientas. Un leer_archivo de 200 líneas o una consulta al
+                # RAG lo desbordan, y Ollama al desbordar TRUNCA POR EL
+                # PRINCIPIO: lo primero que se pierde es el prompt del sistema,
+                # o sea quién es y qué reglas sigue. Eso no da error, solo la
+                # vuelve tonta de golpe.
+                b["num_ctx"] = int(spec.get("num_ctx") or 32768)
             elif b["kind"] == "openai":
                 base = spec.get("base_url") or PROVIDERS.get(prov) or PROVIDERS["groq"]
+                # max_retries=0 a propósito. Por defecto el cliente reintenta
+                # solo y, ante un 429 por tope de tokens POR MINUTO, se duerme
+                # dentro de la llamada esperando a que se rellene el cubo: se
+                # midió un turno de 79,8 s clavado en un único modelo. Y encima
+                # la cadena no se enteraba, porque nunca le llegaba la excepción.
+                # Levantando el reintento, el 429 sale enseguida y BLUE salta al
+                # modelo siguiente, que tiene su propio cupo por minuto. Los
+                # fallos pasajeros (503, cortes) los reintenta _complete.
                 b["client"] = OpenAI(api_key=spec.get("api_key", ""),
-                                     base_url=base, timeout=30.0)
+                                     base_url=base, timeout=30.0,
+                                     max_retries=0)
             self.backends.append(b)
         self._fns = {f.__name__: f for f in TOOLS}
         self._todos_esquemas = _build_schemas()
@@ -510,6 +659,8 @@ class Brain:
             self._dieta = dieta.Dieta()
         except Exception:
             self._dieta = None
+        global _ACTIVO
+        _ACTIVO = self               # para recalentar el titular tras lo pesado
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._degraded = False               # True = corriendo en fallback sin tools
 
@@ -518,6 +669,41 @@ class Brain:
         s = str(e).lower()
         return any(k in s for k in ("429", "quota", "resource_exhausted",
                                     "exceeded", "too many requests", "rate limit"))
+
+    @staticmethod
+    def _reposo(e) -> float:
+        """Cuánto se aparta un cerebro que acaba de fallar, según POR QUÉ falló.
+
+        Antes solo se apartaba al que se quedaba sin cupo, y siempre 600 s. Eso
+        hacía dos destrozos. Uno: el Ollama de casa, con la otra PC apagada,
+        daba "no route to host" en 3,25 s y como no era cupo no se apartaba
+        nunca — se pagaban esos 3,25 s en CADA turno, para siempre. Dos: Groq
+        estrangula por MINUTO (8.000 tokens), y un turno que usa una
+        herramienta son dos llamadas de ~5.500, así que choca dentro del propio
+        turno; castigar con 10 minutos un tope que se levanta en 60 segundos
+        dejaba a BLUE pensando con el cerebro de repuesto media tarde. De ahí
+        que pareciera tonta a ratos.
+
+        Ahora el reposo se ajusta a lo que dice el error, y si el propio
+        proveedor dice cuánto falta, se le hace caso."""
+        import re
+        s = str(e).lower()
+        # El proveedor suele decir "try again in 6.86s" o mandar Retry-After.
+        m = re.search(r"(?:try again in|retry[- ]after[:= ]+)\s*([\d.]+)\s*(m|s|ms)?", s)
+        if m:
+            n = float(m.group(1))
+            n = n / 1000 if m.group(2) == "ms" else n * 60 if m.group(2) == "m" else n
+            return max(2.0, min(n + 1.0, 900.0))
+        if any(k in s for k in ("no route to host", "connection refused",
+                                "connection error", "unreachable", "timed out",
+                                "timeout", "name or service not known",
+                                "failed to establish")):
+            return 180.0                         # la PC de casa está apagada
+        if any(k in s for k in ("per day", "/ day", "daily", "tpd", "rpd")):
+            return 1800.0                        # el diario no vuelve en un rato
+        if Brain._is_rate_limit(e):
+            return 62.0                          # tope por minuto: se rellena ya
+        return 45.0                              # fallo raro: apartarlo un poco
 
     def _complete(self, backend):
         """Una llamada OpenAI-compatible, con reintento ante saturación."""
@@ -616,22 +802,28 @@ class Brain:
         La primera llamada con un prefijo nuevo cuesta ~25 s porque el modelo
         relee los ~6.400 tokens; las siguientes van a uno o dos segundos. Si eso
         se paga al arrancar el daemon, ya nadie lo espera con el micrófono
-        abierto. Calienta el juego de siempre —núcleo más ingeniería, que es lo
-        que más pide— y no toca el historial."""
+        abierto.
+
+        Calienta EL NÚCLEO Y NADA MÁS. Antes metía también el grupo de
+        ingeniería "porque es lo que más pide", y eso lo hacía inútil: la dieta
+        manda solo el núcleo en las órdenes de todos los días ("crea una
+        carpeta", "borra esto", "qué hora es"), o sea un prefijo distinto del
+        que se había calentado. Medido con el modelo recién descargado:
+        calentar tardaba 32 s y la primera orden de Wilmer seguía costando
+        26,7 s — se pagaba el peaje dos veces y él lo pagaba entero igual.
+        Calentando el núcleo, esa primera orden baja a unos 3 s. Si luego pide
+        ingeniería, ese turno paga el prefijo nuevo una vez, que es el reparto
+        correcto: lo raro se paga cuando llega, lo de siempre no se paga."""
         b = next((x for x in self.backends if x["kind"] == "ollama"), None)
         if b is None:
             return "sin cerebro de casa que calentar"
         import time
         import urllib.request
-        activos = {"ingenieria"}
-        try:
-            import dieta
-            permitidas = set(dieta.nucleo([f.__name__ for f in TOOLS]))
-            permitidas |= set(dieta.GRUPOS["ingenieria"][0])
-            esquemas = [e for e in self._todos_esquemas
-                        if e["function"]["name"] in permitidas]
-        except Exception:
-            esquemas, activos = list(self._todos_esquemas), None
+        # El MISMO prefijo que usan las llamadas de verdad contra Ollama: todas
+        # las herramientas y el prompt entero. Si aquí se calentara un juego
+        # recortado, el primer turno real reprocesaría igual y esto no serviría
+        # de nada — que es justo lo que pasaba calentando núcleo+ingeniería.
+        esquemas, activos = list(self._todos_esquemas), None
         cuerpo = json.dumps({
             "model": b["model"],
             "messages": [{"role": "system", "content": _system_content(activos)},
@@ -639,7 +831,10 @@ class Brain:
             "tools": esquemas,
             "stream": False, "think": False,
             "keep_alive": b["keep_alive"],
-            "options": {"temperature": 0, "num_predict": 1},
+            # El mismo num_ctx que las llamadas de verdad: si no coincide,
+            # Ollama recarga el modelo y el calentamiento no vale para nada.
+            "options": {"temperature": 0, "num_predict": 1,
+                        "num_ctx": b["num_ctx"]},
         }).encode()
         req = urllib.request.Request(
             b["base"] + "/api/chat", data=cuerpo,
@@ -672,7 +867,7 @@ class Brain:
                 "stream": False,
                 "think": False,
                 "keep_alive": backend["keep_alive"],
-                "options": {"temperature": 0},
+                "options": {"temperature": 0, "num_ctx": backend["num_ctx"]},
             }).encode()
             req = urllib.request.Request(
                 url, data=cuerpo, headers={"Content-Type": "application/json"})
@@ -752,18 +947,21 @@ class Brain:
         import time
         LAST_ACTIONS.clear()
         self._trim_history()
-        # La dieta se aplica SIEMPRE, también con el cerebro de casa.
+        # La dieta se calcula siempre; solo la USA la nube (ver más abajo).
         #
-        # Aquí me equivoqué y lo pagué en la prueba: pensé que en local convenía
-        # el prompt entero y fijo, para que Ollama reaprovechara su caché. Pero
-        # con las 57 herramientas y 9.400 tokens, jarvis-light se ahoga: contesta
-        # un saludo genérico en vez de lo que se le pregunta, y tarda 62 s. Con
-        # la dieta —40 herramientas y 6.000 tokens— acierta y tarda un segundo.
+        # Historia, porque este sitio ya engañó a una sesión anterior: se probó
+        # mandarle a jarvis-light el prompt entero y "se ahogaba" —contestaba un
+        # saludo genérico en vez de lo pedido, y tardaba 62 s—, así que se dejó
+        # anotado que la dieta hacía falta también en local. La conclusión era
+        # razonable y la causa estaba mal: el modelo se cargaba con num_ctx 8192
+        # y aquellas 57 herramientas eran ~9.400 tokens, o sea que el prompt NO
+        # CABÍA. Ollama al desbordar trunca por el principio y se llevaba el
+        # system entero: por eso el saludo genérico. No era que se ahogara por
+        # tener muchas herramientas, era que se quedaba sin instrucciones.
         #
-        # La caché sigue funcionando: el caso corriente es solo el núcleo, que no
-        # cambia entre turnos. Se paga el procesado otra vez cuando entra o sale
-        # un grupo, y eso es un turno lento de vez en cuando, no una respuesta
-        # equivocada siempre.
+        # Con num_ctx en 32.768 (31/08/2026) las 65 herramientas son 9.646
+        # tokens, el 29 % de la ventana. Verificado con una batería de órdenes
+        # reales: 7 de 8 correctas y ~4 s de media, sin un solo saludo genérico.
         activos = None
         if self._dieta is not None:
             try:
@@ -775,27 +973,66 @@ class Brain:
             except Exception:
                 self._schemas = list(self._todos_esquemas)
                 activos = None
-        # refresca el system con la memoria persistente al día (0 ida y vuelta)
-        self.messages[0] = {"role": "system", "content": _system_content(activos)}
+        # La dieta vale para la NUBE, no para el cerebro de casa.
+        #
+        # Nació para no reventar los 8.000 tokens/minuto de Groq, y ahí sigue
+        # haciendo falta. Pero en casa no hay tope de tokens y la ventana son
+        # 32.768, mientras que lo que sí cuesta caro es que el prefijo se mueva:
+        # cada vez que un grupo se enciende o se apaga, Ollama reprocesa los
+        # ~6.400 tokens y ese turno cuesta ~29 s. Y los grupos entran solos —
+        # "cuánto es 30 psi en bar" enciende ingeniería, y tres turnos después
+        # se apaga: dos peajes de 29 s por una pregunta normal.
+        #
+        # Así que al cerebro de casa se le mandan SIEMPRE las 65 herramientas y
+        # el prompt entero. El prefijo no se mueve nunca, el turno se queda en
+        # ~3 s, y de paso tiene todas las manos a mano en todo momento.
+        self._dieta_schemas = list(self._schemas)
+        self._dieta_activos = activos
         self.messages.append({"role": "user", "content": user_text})
         snap = len(self.messages)                # para limpiar tras un fallo
-        now = time.time()
         last_err = None
-        for b in self.backends:
-            if now < b["cooldown_until"]:        # se agotó hace poco: salta
-                continue
-            del self.messages[snap:]             # quita restos del intento previo
-            try:
-                if b["kind"] == "openai":
-                    return self._run_openai(b)
+        # Dos vueltas: si en la primera TODOS quedaron en reposo pero el reposo
+        # es corto (un tope por minuto), se espera y se reintenta en vez de
+        # contestar que no hay cerebros. Antes esto se rendía en seco.
+        for vuelta in range(2):
+            now = time.time()
+            for b in self.backends:
                 if b["kind"] == "ollama":
-                    return self._run_ollama(b)
-                return self._run_claude_cli(b)
-            except Exception as e:
-                last_err = e
-                if self._is_rate_limit(e):
-                    b["cooldown_until"] = time.time() + 600   # 10 min en reposo
-                continue
+                    # Al titular se le pregunta si está, no se le da por muerto.
+                    if now < b["cooldown_until"]:
+                        continue
+                    if not _ollama_vivo(b["base"]):
+                        b["cooldown_until"] = now + 10    # reintento en 10 s
+                        continue
+                    b["cooldown_until"] = 0.0             # vivo: se le quita el veto
+                elif now < b["cooldown_until"]:  # falló hace poco: salta
+                    continue
+                del self.messages[snap:]         # quita restos del intento previo
+                if b["kind"] == "ollama":            # prefijo fijo, sin dieta
+                    self._schemas = list(self._todos_esquemas)
+                    grupos = None
+                else:                                # nube: la dieta manda
+                    self._schemas = list(self._dieta_schemas)
+                    grupos = self._dieta_activos
+                self.messages[0] = {"role": "system",
+                                    "content": _system_content(grupos)}
+                try:
+                    if b["kind"] == "openai":
+                        return self._run_openai(b)
+                    if b["kind"] == "ollama":
+                        return self._run_ollama(b)
+                    return self._run_claude_cli(b)
+                except Exception as e:
+                    last_err = e
+                    b["cooldown_until"] = time.time() + self._reposo(e)
+                    continue
+            if vuelta == 0:
+                espera = min((b["cooldown_until"] for b in self.backends),
+                             default=0) - time.time()
+                if 0 < espera <= 25:             # el cubo se rellena enseguida
+                    time.sleep(espera + 0.5)
+                    continue
+            break
         del self.messages[snap:]
         if last_err and self._is_rate_limit(last_err):
             return ("Se me agotaron todos los cerebros disponibles, Wilmer. "

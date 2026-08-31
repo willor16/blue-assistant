@@ -50,6 +50,22 @@ class Assistant:
                 self._brain = Brain(api_key=self.cfg["api_key"],
                                     model=self.cfg["model"],
                                     provider=self.cfg.get("provider", "groq"))
+            # Que las consultas pesadas puedan avisar por voz ANTES de empezar.
+            # Cambiar de modelo cuesta 15-20 s y quedarse mudo ese rato parece
+            # un cuelgue; el brain no sabe con qué voz habla BLUE, así que se
+            # le pasa desde aquí.
+            import brain as _brainmod
+            import voice as _voice
+
+            def _decir(frase, _s=self):
+                v, eng = _s._tts()
+                try:
+                    store.set_status("thinking")
+                except Exception:
+                    pass
+                _voice.speak(frase, v, eng)
+
+            _brainmod.AVISAR = _decir
         return self._brain
 
     def preload(self):
@@ -75,6 +91,22 @@ class Assistant:
                 print(f"(aviso) no pude calentar: {e}", flush=True)
         import threading
         threading.Thread(target=_calentar, daemon=True).start()
+
+        # Y el toolbox de ingeniería (pint, CoolProp, fluids, ht, Pynite). Son
+        # 2 s de importación y ~119 MB que, si no se hacen aquí, se los come la
+        # primera cuenta que pida Wilmer. El ahorro es de un segundo escaso, no
+        # de los treinta que llegué a suponer: los picos de 30 s de la primera
+        # pregunta de ingeniería eran el modelo escribiendo el código, no estos
+        # imports. Se hace igualmente porque el segundo se lo ahorra él y la
+        # memoria sobra, pero conviene no vender esto como una gran mejora.
+        def _precargar_ingenieria():
+            try:
+                import engineering
+                engineering._toolbox_ns()
+            except Exception as e:
+                print(f"(aviso) no pude precargar el toolbox: {e}", flush=True)
+
+        threading.Thread(target=_precargar_ingenieria, daemon=True).start()
 
     # ------------------------------------------------ comando por texto
     def handle_text(self, text: str, speak: bool = False) -> str:

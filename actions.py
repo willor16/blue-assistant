@@ -40,6 +40,18 @@ def _exec_detached(cmd: str, workspace: str | None = None):
 
 
 # --------------------------------------------------------------- volumen
+def _verdad(v) -> bool:
+    """Un booleano dicho por un modelo, entendido de verdad.
+
+    Los esquemas ya declaran el tipo bien, pero un modelo despistado sigue
+    pudiendo mandar la cadena "false", y en Python eso es VERDADERO. Donde eso
+    decide si se pisa un archivo o si se captura media pantalla, no se puede
+    dejar al azar."""
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "false", "no", "0", "none", "null")
+    return bool(v)
+
+
 def set_volume(percent: int) -> str:
     percent = max(0, min(150, int(percent)))
     _run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{percent/100:.2f}"])
@@ -143,7 +155,7 @@ def open_terminal_run(path: str = "~", command: str = "", terminal: str = "kitty
     if not shutil.which(term):
         term = TERMINAL  # fallback al terminal por defecto
     cmd = (command or "").strip()
-    tail = "; exec bash" if keep_open else ""
+    tail = "; exec bash" if _verdad(keep_open) else ""
     inner = f"{cmd}{tail}" if cmd else "exec bash"
     if term == "kitty":
         full = f"kitty --directory {shlex.quote(p)} -- bash -lc {shlex.quote(inner)}"
@@ -445,6 +457,7 @@ def take_screenshot(region: bool = False) -> str:
     """Guarda una captura de pantalla en ~/Imágenes/Capturas. region=True deja
     seleccionar un área con el ratón (slurp)."""
     import shutil, time
+    region = _verdad(region)
     if not shutil.which("grim"):
         return "No tengo cómo capturar, Wilmer (falta grim)"
     folder = Path.home() / "Imágenes" / "Capturas"
@@ -543,48 +556,334 @@ def run_action(name: str, params: dict) -> str:
         return f"(error en {name}: {e})"
 
 
-# ── carpetas sueltas ───────────────────────────────────────────────────────
+# ── archivos y carpetas ────────────────────────────────────────────────────
 # Faltaba lo más simple. BLUE sabía crear "proyectos" y "espacios de estudio",
 # que son contenedores con protocolo y memoria propia, pero no una carpeta y
 # ya. Así que "crea una carpeta en Documentos que se llame feria tecnológica"
 # se colaba por la maquinaria de proyectos y acababa en Proyectos Universidad.
-def crear_carpeta(ruta: str) -> str:
-    """Crea una carpeta (y las intermedias que falten) dentro de la casa."""
+#
+# Y durante un tiempo eso fue TODO lo que sabía hacer con archivos: crear una
+# carpeta y listarla. No había borrar, mover, renombrar, copiar, leer ni
+# escribir, así que "borra esto" no fallaba, es que no existía la mano. El
+# modelo, sin herramienta, contestaba que ya estaba hecho. De ahí la queja de
+# que fingía. Todo lo de aquí abajo se acota a la carpeta personal, y borrar
+# es SIEMPRE a la papelera: una orden dicha a medias no puede costar trabajo.
+
+_CASA_INTOCABLE = {"", "Documentos", "Descargas", "Escritorio", "Imágenes",
+                   "Música", "Vídeos", "Videos", "Plantillas", "Público"}
+
+
+def _ruta_casa(ruta: str, base: str = "Documentos"):
+    """Resuelve una ruta dicha en voz alta y la encierra en la carpeta personal.
+
+    Devuelve (Path, None) si vale, o (None, motivo) si no. Lo relativo cuelga
+    de `base` porque Wilmer nombra las cosas por su nombre a secas ("borra el
+    presupuesto"), no por su ruta completa."""
     from pathlib import Path
-    p = Path(str(ruta).strip().strip('"').strip("'")).expanduser()
-    if not p.is_absolute():                       # "feria tecnológica" -> Documentos
-        p = Path.home() / "Documentos" / p
+    txt = str(ruta or "").strip().strip('"').strip("'")
+    if not txt:
+        return None, "No me dijiste cuál."
+    p = Path(txt).expanduser()
+    if not p.is_absolute():
+        raiz = Path(base)
+        p = (raiz if raiz.is_absolute() else Path.home() / base) / p
     casa = Path.home().resolve()
     try:
+        # resolve(strict=False) sigue los symlinks: así un enlace que apunte
+        # fuera de la casa tampoco cuela.
         destino = p.resolve()
-        destino.relative_to(casa)                 # nada fuera de /home/wilmer
+        destino.relative_to(casa)
     except (ValueError, OSError):
-        return f"No creo carpetas fuera de tu carpeta personal: {p}"
+        return None, f"Eso está fuera de tu carpeta personal y no lo toco: {p}"
+    return destino, None
+
+
+def _protegida(p) -> bool:
+    """¿Es la casa misma o una de las carpetas grandes del sistema?"""
+    from pathlib import Path
+    casa = Path.home().resolve()
+    if p == casa:
+        return True
+    rel = p.relative_to(casa).as_posix() if p != casa else ""
+    return rel in _CASA_INTOCABLE
+
+
+def _breve(p) -> str:
+    """La ruta como se dice en voz alta, sin el /home/wilmer delante."""
+    from pathlib import Path
+    casa = Path.home().resolve()
+    if p == casa:
+        return "tu carpeta personal"
+    try:
+        return "~/" + str(p.relative_to(casa))
+    except ValueError:
+        return str(p)
+
+
+def crear_carpeta(ruta: str) -> str:
+    """Crea una carpeta (y las intermedias que falten) dentro de la casa."""
+    destino, err = _ruta_casa(ruta)
+    if err:
+        return err
     if destino.is_file():
-        return f"Ahí ya hay un archivo con ese nombre, no una carpeta: {destino}"
+        return f"Ahí ya hay un archivo con ese nombre, no una carpeta: {_breve(destino)}"
     if destino.is_dir():
-        return f"Esa carpeta ya existía: {destino}"
+        return f"Esa carpeta ya existía: {_breve(destino)}"
     try:
         destino.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         return f"No pude crear la carpeta: {e}"
-    return f"Carpeta creada: {destino}"
+    return f"Carpeta creada: {_breve(destino)}"
 
 
 def listar_carpeta(ruta: str = "") -> str:
     """Dice qué hay dentro de una carpeta."""
     from pathlib import Path
-    p = Path(str(ruta).strip() or str(Path.home() / "Documentos")).expanduser()
-    if not p.is_absolute():
-        p = Path.home() / "Documentos" / p
-    if not p.is_dir():
-        return f"No existe esa carpeta: {p}"
-    cosas = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+    if not str(ruta or "").strip():
+        destino, err = Path.home().resolve() / "Documentos", None
+    else:
+        destino, err = _ruta_casa(ruta)
+    if err:
+        return err
+    if not destino.is_dir():
+        return f"No existe esa carpeta: {_breve(destino)}"
+    cosas = sorted(destino.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
     if not cosas:
-        return f"{p} está vacía."
+        return f"{_breve(destino)} está vacía."
     nombres = [(c.name + "/" if c.is_dir() else c.name) for c in cosas[:40]]
     extra = f" y {len(cosas) - 40} cosas más" if len(cosas) > 40 else ""
-    return f"En {p}: " + ", ".join(nombres) + extra + "."
+    return f"En {_breve(destino)}: " + ", ".join(nombres) + extra + "."
+
+
+def borrar(ruta: str) -> str:
+    """Manda algo a la PAPELERA. Nunca borra de verdad: se puede deshacer."""
+    import shutil
+    import subprocess
+    destino, err = _ruta_casa(ruta)
+    if err:
+        return err
+    if not destino.exists():
+        return (f"No encuentro {_breve(destino)}. Mira antes con listar_carpeta "
+                f"o buscar_archivo, no des por hecho que ya no está.")
+    if _protegida(destino):
+        return (f"No mando a la papelera {_breve(destino)}: es una de tus carpetas "
+                f"grandes. Dime qué hay dentro que quieres borrar.")
+    # gio deja el archivo recuperable desde el gestor de archivos y guarda de
+    # dónde salió. Es la papelera de verdad del escritorio, no un apaño.
+    if shutil.which("gio"):
+        try:
+            out = subprocess.run(["gio", "trash", str(destino)],
+                                 capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                return f"A la papelera: {_breve(destino)}. Se puede recuperar."
+            fallo = (out.stderr or "").strip()
+        except (subprocess.SubprocessError, OSError) as e:
+            fallo = str(e)
+    else:
+        fallo = "no hay gio"
+    # Sin gio, papelera a mano según la spec de freedesktop, con su .trashinfo
+    # para que el gestor de archivos sepa restaurarlo a su sitio.
+    from datetime import datetime
+    from pathlib import Path
+    papelera = Path.home() / ".local/share/Trash"
+    try:
+        (papelera / "files").mkdir(parents=True, exist_ok=True)
+        (papelera / "info").mkdir(parents=True, exist_ok=True)
+        nombre, n = destino.name, 1
+        while (papelera / "files" / nombre).exists():
+            nombre, n = f"{destino.stem}.{n}{destino.suffix}", n + 1
+        (papelera / "info" / f"{nombre}.trashinfo").write_text(
+            "[Trash Info]\n"
+            f"Path={destino}\n"
+            f"DeletionDate={datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n")
+        shutil.move(str(destino), str(papelera / "files" / nombre))
+    except OSError as e:
+        return f"No pude mandarlo a la papelera ({fallo}): {e}"
+    return f"A la papelera: {_breve(destino)}. Se puede recuperar."
+
+
+def mover(origen: str, destino: str) -> str:
+    """Mueve un archivo o carpeta a otro sitio de la casa."""
+    import shutil
+    o, err = _ruta_casa(origen)
+    if err:
+        return err
+    if not o.exists():
+        return f"No encuentro {_breve(o)}."
+    if _protegida(o):
+        return f"No muevo {_breve(o)}: es una de tus carpetas grandes."
+    d, err = _ruta_casa(destino, base=str(o.parent))
+    if err:
+        return err
+    if d.is_dir():                      # "mueve el informe a Descargas"
+        d = d / o.name
+    if d == o:
+        return f"{_breve(o)} ya está ahí."
+    if d.exists():
+        return f"Ya hay algo llamado {d.name} en {_breve(d.parent)}. Dime otro nombre."
+    try:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(o), str(d))
+    except OSError as e:
+        return f"No pude moverlo: {e}"
+    return f"Movido a {_breve(d)}."
+
+
+def renombrar(ruta: str, nombre_nuevo: str) -> str:
+    """Le cambia el nombre a un archivo o carpeta, sin sacarlo de su sitio."""
+    o, err = _ruta_casa(ruta)
+    if err:
+        return err
+    if not o.exists():
+        return f"No encuentro {_breve(o)}."
+    if _protegida(o):
+        return f"No renombro {_breve(o)}: es una de tus carpetas grandes."
+    nuevo = str(nombre_nuevo or "").strip().strip('"').strip("'")
+    if not nuevo or "/" in nuevo:
+        return "Dime solo el nombre nuevo, sin rutas."
+    # Si dicta "informe" para un "informe.pdf", se le conserva la extensión:
+    # al oído no se le dice ".pdf" y perderla rompe con qué app abre.
+    if o.is_file() and o.suffix and not nuevo.endswith(o.suffix):
+        nuevo += o.suffix
+    d = o.parent / nuevo
+    if d == o:
+        return f"Ya se llama así: {o.name}."
+    if d.exists():
+        return f"Ya hay algo llamado {nuevo} ahí. Dime otro nombre."
+    try:
+        o.rename(d)
+    except OSError as e:
+        return f"No pude renombrarlo: {e}"
+    return f"Renombrado a {nuevo}, en {_breve(d.parent)}."
+
+
+def copiar(origen: str, destino: str) -> str:
+    """Copia un archivo o carpeta, dejando el original donde está."""
+    import shutil
+    o, err = _ruta_casa(origen)
+    if err:
+        return err
+    if not o.exists():
+        return f"No encuentro {_breve(o)}."
+    # Un destino sin ruta ("cópialo a copia.txt") quiere decir AL LADO del
+    # original, no en ~/Documentos. Resolverlo contra Documentos hacía que la
+    # copia apareciera lejos del archivo del que salió.
+    d, err = _ruta_casa(destino, base=str(o.parent))
+    if err:
+        return err
+    if d.is_dir() and o.name != d.name:
+        d = d / o.name
+    if d.exists():
+        return f"Ya hay algo llamado {d.name} en {_breve(d.parent)}. Dime otro nombre."
+    try:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        if o.is_dir():
+            shutil.copytree(str(o), str(d))
+        else:
+            shutil.copy2(str(o), str(d))
+    except OSError as e:
+        return f"No pude copiarlo: {e}"
+    return f"Copiado en {_breve(d)}."
+
+
+def buscar_archivo(nombre: str, dentro: str = "") -> str:
+    """Busca por nombre dentro de la carpeta personal. Sirve para localizar
+    algo antes de moverlo o borrarlo."""
+    from pathlib import Path
+    patron = str(nombre or "").strip().strip('"').strip("'").lower()
+    if not patron:
+        return "Dime qué busco."
+    if str(dentro or "").strip():
+        raiz, err = _ruta_casa(dentro)
+        if err:
+            return err
+    else:
+        raiz = Path.home().resolve()
+    if not raiz.is_dir():
+        return f"No existe esa carpeta: {_breve(raiz)}"
+    saltar = {".git", ".venv", "node_modules", "__pycache__", ".cache",
+              ".local", ".config", ".mozilla", ".steam", "Trash"}
+    # `fd` está en C y recorre en paralelo: la misma búsqueda que en Python
+    # tardaba 24 s la resuelve en décimas. Se le pasa el patrón como texto
+    # literal (--fixed-strings), que es como lo dicta Wilmer, no como regex.
+    import shutil as _sh
+    import subprocess as _sp
+    if _sh.which("fd"):
+        # SIN --hidden a propósito. Cuando Wilmer dice "busca el archivo
+        # pendientes" se refiere a lo suyo, no a la configuración de sus
+        # programas, y fd salta los directorios ocultos por defecto. Además de
+        # ser lo correcto es lo rápido: con --hidden y media docena de
+        # --exclude, fd ya no puede cortar pronto y recorría la casa entera en
+        # 15 s; sin ocultos, la misma búsqueda tarda 0,02 s.
+        cmd = ["fd", "--fixed-strings", "--ignore-case", "--absolute-path",
+               "--max-results", "25"]
+        for s in ("node_modules", "__pycache__", ".venv", ".git"):
+            cmd += ["--exclude", s]
+        cmd += [patron, str(raiz)]
+        try:
+            out = _sp.run(cmd, capture_output=True, text=True, timeout=20)
+            rutas = [Path(l) for l in out.stdout.splitlines() if l.strip()]
+            if not rutas:
+                return f"No hay nada que se llame así en {_breve(raiz)}."
+            filas = [_breve(p) + ("/" if p.is_dir() else "") for p in rutas]
+            return f"Encontré {len(filas)}: " + ", ".join(filas) + "."
+        except (_sp.SubprocessError, OSError):
+            pass                          # si fd falla, se recorre a mano
+    encontrados = []
+    for base, dirs, ficheros in __import__("os").walk(raiz):
+        dirs[:] = [d for d in dirs if d not in saltar and not d.startswith(".")]
+        for nom in dirs + ficheros:
+            if patron in nom.lower():
+                encontrados.append(Path(base) / nom)
+                if len(encontrados) >= 25:
+                    break
+        if len(encontrados) >= 25:
+            break
+    if not encontrados:
+        return f"No hay nada que se llame así en {_breve(raiz)}."
+    filas = [_breve(p) + ("/" if p.is_dir() else "") for p in encontrados]
+    return f"Encontré {len(filas)}: " + ", ".join(filas) + "."
+
+
+def leer_archivo(ruta: str, lineas: int = 200) -> str:
+    """Lee un archivo de texto y devuelve su contenido."""
+    destino, err = _ruta_casa(ruta)
+    if err:
+        return err
+    if not destino.is_file():
+        return f"No encuentro ese archivo: {_breve(destino)}"
+    if destino.stat().st_size > 2_000_000:
+        return (f"{_breve(destino)} pesa demasiado para leerlo entero. "
+                f"Si hay que trabajarlo, pásaselo a ÉREBO con dev_task.")
+    try:
+        texto = destino.read_text(errors="replace")
+    except (OSError, UnicodeDecodeError):
+        return f"{_breve(destino)} no es un archivo de texto."
+    filas = texto.splitlines()
+    corte = filas[:max(1, int(lineas))]
+    extra = f"\n(...y {len(filas) - len(corte)} líneas más)" if len(filas) > len(corte) else ""
+    return f"{_breve(destino)}:\n" + "\n".join(corte) + extra
+
+
+def escribir_archivo(ruta: str, contenido: str, anexar: bool = False) -> str:
+    """Escribe un archivo de texto. No pisa nada existente salvo que se anexe."""
+    destino, err = _ruta_casa(ruta)
+    if err:
+        return err
+    anexar = _verdad(anexar)
+    if destino.is_dir():
+        return f"{_breve(destino)} es una carpeta, no un archivo."
+    if destino.exists() and not anexar:
+        return (f"Ya existe {_breve(destino)} y no lo piso. Dime otro nombre, "
+                f"o si quieres que le añada esto al final.")
+    try:
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        with open(destino, "a" if anexar else "w") as f:
+            f.write(str(contenido or ""))
+    except OSError as e:
+        return f"No pude escribirlo: {e}"
+    verbo = "Añadido al final de" if anexar else "Escrito"
+    return f"{verbo} {_breve(destino)}."
 
 
 def estado_maquina() -> str:

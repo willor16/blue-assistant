@@ -55,19 +55,51 @@ email_app_password = ""
 imap_host = "imap.gmail.com"
 smtp_host = "smtp.gmail.com"
 
+# --- El escalafón de motores -----------------------------------------------
+# PROMETEO (la voz, el proveedor de arriba) · ORFEO (jarvis-heavy en Ollama)
+# ARGOS (reservado) · ÍCARO (Hermes Agent) · ÉREBO (Claude Code)
+# Dónde vive el Ollama del que salen ORFEO e ÍCARO.
+# PONLO POR NOMBRE, NO POR IP: el DHCP del router cambia la dirección cuando le
+# apetece, y entonces Blue da el servidor por apagado y se va a la nube sin
+# decírtelo. El nombre mDNS (.local) sobrevive a eso.
+ollama_host = "http://mi-servidor.local:11434"
+
 # === Cadena de FAILOVER del cerebro =========================================
-# Blue prueba estos en orden. Si uno se agota (límite/cuota), cae solo al
-# siguiente. El último es tu Claude (suscripción, vía CLI): sin herramientas
-# pero confiable. Cuando uno se agota, queda en reposo 10 min y reintenta.
+# Blue prueba estos EN ORDEN y, si uno falla, cae solo al siguiente. Cuánto se
+# aparta el que falló depende de POR QUÉ falló: si el proveedor dice "reintenta
+# en X s" se le hace caso; 180 s si es un fallo de red; 1.800 s si se agotó el
+# cupo del día; ~60 s si es el tope por minuto (que se rellena enseguida).
+#
+# PRIMERO EL DE CASA. Sin cupo, sin tope por minuto y privado. Se le pregunta
+# con un socket de 0,35 s antes de cada turno: si la máquina está apagada se
+# descarta al instante y se va a la nube, y en cuanto la enciendes vuelve solo.
+[[brain]]
+provider = "ollama"
+model = "jarvis-light"
+keep_alive = "8h"          # que no lo descargue entre pregunta y pregunta
+# El Modelfile suele fijar num_ctx en 8.192 y eso se queda CORTO: el prompt de
+# Blue con todas las herramientas son ~9.600 tokens, así que desborda, y Ollama
+# al desbordar trunca por el principio — se lleva el prompt del sistema y Blue
+# se queda sin saber quién es, sin dar ningún error.
+num_ctx = 32768
+
+# La nube, de respaldo para cuando la máquina de casa esté apagada. Groq limita
+# por MINUTO y POR MODELO (8.000 tokens), y una llamada de Blue son ~6.400: un
+# turno con herramienta no cabe en un solo modelo. Por eso van varios apilados,
+# cada uno con su propio cupo.
 [[brain]]
 provider = "groq"
 model = "openai/gpt-oss-120b"
 api_key = ""
 
-# Respaldo en Groq (sigue teniendo herramientas) antes de pasar a Gemini.
 [[brain]]
 provider = "groq"
-model = "llama-3.3-70b-versatile"
+model = "openai/gpt-oss-20b"
+api_key = ""
+
+[[brain]]
+provider = "groq"
+model = "qwen/qwen3.8-27b"
 api_key = ""
 
 [[brain]]
@@ -79,8 +111,3 @@ api_key = ""
 provider = "claude-cli"
 model = "claude-haiku-4-5"
 
-# --- El escalafón de motores -----------------------------------------------
-# PROMETEO (la voz, el proveedor de arriba) · ORFEO (jarvis-heavy en Ollama)
-# ARGOS (reservado) · ÍCARO (Hermes Agent) · ÉREBO (Claude Code)
-# Dónde vive el Ollama del que salen ORFEO e ÍCARO:
-ollama_host = "http://192.168.0.22:11434"

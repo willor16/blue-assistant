@@ -298,6 +298,119 @@ def interrumpir():
 def silenciada() -> bool:
     return _callada.is_set()
 
+_FIN = object()          # centinela: no quedan más frases por sintetizar
+
+
+def _partir_en_frases(texto: str, primera: int = 45, resto: int = 110) -> list:
+    """Trocea la respuesta en bocados que se puedan sintetizar por separado.
+
+    El primero se hace CORTO a propósito: es el que decide cuánto tarda BLUE en
+    abrir la boca. Los siguientes se juntan más largos, porque Kokoro entona
+    mejor con una frase entera delante y para entonces ya hay audio sonando que
+    tapa la síntesis."""
+    import re
+    piezas = re.split(r"(?<=[.!?…:])\s+|\n+", texto)
+    piezas = [p.strip() for p in piezas if p.strip()]
+    if not piezas:
+        return []
+    bloques, actual = [], ""
+    for p in piezas:
+        minimo = primera if not bloques else resto
+        actual = f"{actual} {p}".strip() if actual else p
+        if len(actual) >= minimo:
+            bloques.append(actual)
+            actual = ""
+    if actual:
+        # Una cola muy corta suena cortada: se pega al bloque anterior.
+        if bloques and len(actual) < 25:
+            bloques[-1] += " " + actual
+        else:
+            bloques.append(actual)
+    return bloques
+
+
+def _hablar_por_frases(text: str, voz: str, mi_turno: int) -> bool:
+    """Habla mientras sintetiza, en vez de sintetizar y luego hablar.
+
+    Kokoro devuelve UN solo trozo por llamada, dé igual lo larga que sea la
+    frase: medido, una respuesta explicativa son 6,35 s de silencio antes de
+    que suene nada, y luego 20,6 s de audio. Pero sintetiza como tres veces más
+    rápido de lo que se escucha, así que troceando por frases se puede empezar
+    a hablar tras la primera (~0,6 s) y sintetizar el resto mientras suena, sin
+    que la reproducción se quede nunca sin material.
+
+    De regalo, interrumpir se vuelve fino: entre frase y frase se mira si Wilmer
+    mandó callar, así que el ⏹ corta en menos de una frase en vez de esperar a
+    que acabe el audio entero."""
+    global _play_proc
+    bloques = _partir_en_frases(text)
+    if len(bloques) < 2:
+        return False                      # una sola frase: no hay nada que ganar
+
+    cola: queue.Queue = queue.Queue(maxsize=2)
+
+    def productor():
+        for b in bloques:
+            if _callada.is_set() or mi_turno != _turno:
+                break
+            ruta = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    ruta = tmp.name
+                if not _synth_kokoro(b, voz, ruta):
+                    raise RuntimeError("kokoro no devolvio audio")
+            except Exception:
+                if ruta:
+                    try:
+                        os.unlink(ruta)
+                    except OSError:
+                        pass
+                ruta = None
+            cola.put(ruta)
+        cola.put(_FIN)
+
+    hilo = threading.Thread(target=productor, daemon=True)
+    hilo.start()
+    sono = False
+    try:
+        while True:
+            item = cola.get()
+            if item is _FIN:
+                break
+            if item is None:
+                continue                  # esa frase no se pudo sintetizar
+            try:
+                if _callada.is_set() or mi_turno != _turno:
+                    continue              # se sigue vaciando la cola para limpiar
+                _play_proc = subprocess.Popen(["paplay", item])
+                _play_proc.wait()
+                sono = True
+            except Exception:
+                pass
+            finally:
+                _play_proc = None
+                try:
+                    os.unlink(item)
+                except OSError:
+                    pass
+    finally:
+        _callada_ya = _callada.is_set() or mi_turno != _turno
+        if _callada_ya:
+            # que el productor no se quede colgado en un put() con la cola llena
+            while True:
+                try:
+                    it = cola.get_nowait()
+                except queue.Empty:
+                    break
+                if it not in (None, _FIN):
+                    try:
+                        os.unlink(it)
+                    except OSError:
+                        pass
+        hilo.join(timeout=1.0)
+    return sono or _callada.is_set() or mi_turno != _turno
+
+
 def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
     """Habla 'text'. engine='kokoro' (cálida local) | 'edge' (neural online) | 'piper' (ligero local).
     'voice' es el id correspondiente al motor (ef_dora, es-MX-DaliaNeural, etc)."""
@@ -324,6 +437,14 @@ def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
     audio_path = wav_path
     try:
         if engine == "kokoro":
+            # Primero por frases: empieza a sonar a los ~0,6 s en vez de esperar
+            # a tener la respuesta entera sintetizada. Si no aplica (una sola
+            # frase) o falla, se cae al camino de siempre.
+            try:
+                if _hablar_por_frases(text, voice, mi_turno):
+                    return
+            except Exception:
+                pass
             try:
                 ok = _synth_kokoro(text, voice, wav_path)
             except Exception:
