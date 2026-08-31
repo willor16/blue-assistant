@@ -81,9 +81,16 @@ def record_until_silence(max_seconds: float | None = None,
     calibrar = int(0.4 * blocks_per_sec) if auto else 0
     fondo: list[float] = []
 
+    _cancelada.clear()      # una cancelacion vieja no puede matar esta escucha
+
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, blocksize=BLOCK,
                         dtype="float32", callback=cb):
         for i in range(max_blocks):
+            if _cancelada.is_set():
+                # Le dio a parar. Se devuelve vacio, y quien llama (handle_voice
+                # y la charla continua) ya sabe abortar el turno con eso: no
+                # transcribe, no piensa y no contesta.
+                return np.zeros(0, dtype=np.float32)
             try:
                 block = q.get(timeout=1.0)
             except queue.Empty:
@@ -274,6 +281,13 @@ _play_proc = None        # proceso paplay/ffplay actual (para poder interrumpirl
 # orden de callar se RECORDARA. Eso es _callada: se pone al interrumpir y solo
 # la limpia el turno siguiente.
 _callada = threading.Event()
+# _callada solo impedia HABLAR. Si Wilmer le daba a parar mientras BLUE
+# ESCUCHABA, no pasaba nada: record_until_silence seguia grabando hasta agotar
+# los 45 s del tope, la interfaz ya decia "Listo" (mentira, el micro seguia
+# abierto), y al terminar transcribia y pensaba un turno que luego no se decia
+# —porque _callada seguia puesto—. Los tres sintomas eran esto. _cancelada
+# corta la grabacion de verdad.
+_cancelada = threading.Event()
 _turno = 0
 _turno_lock = threading.Lock()
 
@@ -285,14 +299,23 @@ def nuevo_turno() -> int:
     with _turno_lock:
         _turno += 1
         _callada.clear()
+        _cancelada.clear()
         return _turno
 
 
 def interrumpir():
-    """Wilmer ha pedido callar. A diferencia de stop_speaking(), esto se
-    recuerda: lo que venga detrás tampoco se dice, hasta el turno siguiente."""
+    """Wilmer ha pedido parar: aborta el turno ENTERO.
+
+    A diferencia de stop_speaking(), esto se recuerda: lo que venga detrás
+    tampoco se dice, hasta el turno siguiente. Y corta la grabación en curso,
+    que es lo que faltaba: parar mientras escuchaba no paraba nada."""
     _callada.set()
+    _cancelada.set()
     stop_speaking()
+
+
+def escucha_cancelada() -> bool:
+    return _cancelada.is_set()
 
 
 def silenciada() -> bool:
