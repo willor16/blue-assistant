@@ -68,8 +68,54 @@ class Assistant:
             _brainmod.AVISAR = _decir
         return self._brain
 
+    @staticmethod
+    def _limpiar_espeak_huerfanos():
+        """Borra los libespeak-ng.so temporales que dejó Kokoro en arranques
+        anteriores.
+
+        El cargador de espeak extrae su .so a un directorio temporal nuevo cada
+        vez que arranca Kokoro y nunca lo limpia: dos por reinicio, 648 KB cada
+        uno. En /tmp, que es tmpfs, o sea RAM. No afecta al rendimiento ni a lo
+        que Blue sabe hacer —cada proceso mapea solo el suyo— pero si se
+        reinicia a menudo va sumando y no se libera hasta reiniciar el equipo.
+
+        Solo se borra lo que NO tiene mapeado ningún proceso vivo. El de este
+        arranque, y el de cualquier otro programa que use espeak, se quedan."""
+        from pathlib import Path
+        en_uso = set()
+        for mapa in Path("/proc").glob("[0-9]*/maps"):
+            try:
+                for linea in mapa.read_text().splitlines():
+                    if "libespeak-ng.so" in linea and "/tmp/" in linea:
+                        en_uso.add(linea.rsplit(" ", 1)[-1].strip())
+            except OSError:
+                continue                  # el proceso murió mientras leíamos
+        borrados = 0
+        for d in Path("/tmp").glob("tmp*"):
+            so = d / "libespeak-ng.so"
+            try:
+                if not d.is_dir() or not so.is_file():
+                    continue
+                if [p.name for p in d.iterdir()] != ["libespeak-ng.so"]:
+                    continue              # tiene más cosas: no es lo que busco
+                if str(so) in en_uso:
+                    continue              # alguien lo está usando ahora mismo
+                so.unlink()
+                d.rmdir()
+                borrados += 1
+            except OSError:
+                continue
+        return borrados
+
     def preload(self):
         import voice
+        try:
+            n = self._limpiar_espeak_huerfanos()
+            if n:
+                print(f"(limpiados {n} temporales de voz de arranques previos)",
+                      flush=True)
+        except Exception:
+            pass                          # limpiar nunca puede impedir arrancar
         voice._get_whisper(self.cfg["whisper_size"])
         if self.cfg.get("tts", "kokoro") == "kokoro":
             try:

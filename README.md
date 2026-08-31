@@ -21,6 +21,10 @@ apagar o suspender.
 terminal y pon música") y la lanzas por voz. Un proyecto además es un
 contenedor de contexto: su carpeta, su memoria y sus documentos.
 
+**Tus archivos.** Crear carpetas, listar, buscar, leer, escribir, renombrar,
+mover, copiar y borrar. Todo acotado a tu carpeta personal, y **borrar va
+siempre a la papelera**, nunca destruye nada.
+
 **Tus documentos.** Indexa tus apuntes y responde a partir de ellos, citando de
 dónde salió. Acotado al proyecto activo.
 
@@ -142,6 +146,29 @@ api_key  = "…"
 
 Ese archivo **nunca se sube**: está en el `.gitignore` y vive fuera del repo.
 
+**Si tienes un Ollama en la red local, ponlo el PRIMERO de la cadena.** Es
+gratis, privado y sin tope por minuto; la nube queda de respaldo para cuando esa
+máquina esté apagada. Dos detalles que cuestan caro si se pasan por alto:
+
+```toml
+# Por NOMBRE, no por IP: el DHCP cambia la dirección y entonces Blue da el
+# servidor por apagado y se va a la nube sin decírtelo.
+ollama_host = "http://mi-servidor.local:11434"
+
+[[brain]]
+provider   = "ollama"
+model      = "jarvis-light"
+keep_alive = "8h"
+num_ctx    = 32768   # OBLIGATORIO subirlo
+```
+
+`num_ctx` importa más de lo que parece. Los Modelfile suelen fijarlo en 8.192 y
+el prompt de Blue con todas sus herramientas son ~9.600 tokens: **no cabe**.
+Ollama al desbordar trunca por el principio, se lleva el prompt del sistema, y
+Blue se queda sin saber quién es ni qué reglas sigue — sin dar ningún error.
+Parece que el modelo se ha vuelto tonto y lo que pasa es que está sin
+instrucciones.
+
 ### 4. El lanzador
 
 ```bash
@@ -242,7 +269,12 @@ escucha_umbral     = "auto" # o un número fijo, p.ej. 0.012
 tts          = "kokoro"     # kokoro (local) | edge (online) | piper (ligero)
 kokoro_voice = "ef_dora"    # ef_dora | em_alex | em_santa
 whisper_size = "small"      # tiny | base | small | medium
+
+ollama_host = "http://mi-servidor.local:11434"   # el cerebro de casa, por nombre
 ```
+
+Y dentro del `[[brain]]` de Ollama, `num_ctx = 32768`. No lo bajes por debajo de
+16.384 o el prompt no cabrá y Blue empezará a responder cosas raras.
 
 ---
 
