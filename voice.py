@@ -66,6 +66,7 @@ def record_until_silence(max_seconds: float | None = None,
         q.put(indata.copy())
 
     frames: list[np.ndarray] = []
+    nivel: list[float] = []      # el RMS de cada bloque, para el rescate de abajo
     speaking = False
     silent_blocks = 0
     spoken_blocks = 0
@@ -73,6 +74,11 @@ def record_until_silence(max_seconds: float | None = None,
     max_blocks = int(max_seconds * blocks_per_sec)
     hang_blocks = int(silence_hang * blocks_per_sec)
     start_blocks = int(start_timeout * blocks_per_sec)
+    # Ventana del rescate por umbral hundido (ver abajo). Siete segundos porque
+    # nadie habla siete segundos seguidos sin una sola respiracion: si en toda
+    # la ventana no ha bajado ni un bloque, no es que Wilmer no calle, es que el
+    # umbral esta por debajo del ruido del cuarto.
+    rescate_blocks = int(7.0 * blocks_per_sec)
 
     # Calibrado: los primeros bloques suelen ser el ruido de fondo del cuarto.
     # "Suelen": si Wilmer empieza a hablar de inmediato, esa ventana lleva voz
@@ -110,6 +116,33 @@ def record_until_silence(max_seconds: float | None = None,
                     pass          # esa ventana llevaba voz: no me fío, dejo el fijo
                 else:
                     silence_threshold = max(0.006, min(0.05, suelo * 3.0))
+
+            nivel.append(rms)
+
+            # RESCATE: el umbral se hundio por debajo del ruido del cuarto.
+            #
+            # El umbral de config.toml es un numero absoluto, y eso solo vale
+            # mientras el ruido no se mueva. Se mueve: el 31/08/2026 estaba
+            # calibrado en 0,02 sobre un fondo de 0,007, y bastaron la ganancia
+            # del micro subida al 57 % y los ventiladores a tope para dejar el
+            # fondo en 0,072. Con eso NINGUN bloque cuenta como silencio, la
+            # grabacion no puede cortar nunca y se come los 45 s enteros de
+            # escucha_max_s. Medido: 45,19 s de escucha con nadie hablando.
+            # Eso era la mitad de los "70 s para un hola" de los que se quejaba.
+            #
+            # El sintoma es inconfundible y no se puede confundir con alguien
+            # hablando mucho: en siete segundos de voz real SIEMPRE hay bloques
+            # que bajan —entre frases, al respirar—, mientras que un ruido
+            # constante nunca baja de su propio suelo. Asi que si el minimo de
+            # la ventana entera sigue por encima del umbral, se sube el umbral
+            # al ruido que se esta midiendo de verdad y se sigue escuchando.
+            # Se corrige solo y no hace falta recalibrar nada a mano.
+            if speaking and len(nivel) >= rescate_blocks:
+                reciente = nivel[-rescate_blocks:]
+                if min(reciente) > silence_threshold:
+                    subido = float(np.percentile(reciente, 10)) * 1.6
+                    if subido > silence_threshold:
+                        silence_threshold = subido
 
             if rms > silence_threshold:
                 speaking = True
