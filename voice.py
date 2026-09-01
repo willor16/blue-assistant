@@ -21,6 +21,45 @@ BLOCK = 1024
 CONFIG_DIR = Path.home() / ".config" / "blue"
 VOICES_DIR = CONFIG_DIR / "voices"
 
+# ------------------------------------------------- silenciar mientras escucha
+# Wilmer, con Spotify sonando: "le dije pausa la musica pero como esta
+# escuchando creo que la musica no permitio que mi instruccion se escuchara".
+# Exacto: el microfono oye los altavoces, y la musica entra en la misma senal
+# que la voz. Encima el umbral se calibra con el cuarto tal y como suena, asi
+# que con musica sube y hace falta gritar por encima de ella.
+#
+# Se silencia la SALIDA mientras BLUE escucha y se devuelve al soltar. Si ya
+# estaba silenciado por Wilmer, no se toca al terminar: reactivarle el sonido
+# que el habia quitado seria peor que el problema.
+_audio_lo_silencie_yo = False
+
+def _silenciar_salida() -> None:
+    global _audio_lo_silencie_yo
+    _audio_lo_silencie_yo = False
+    try:
+        r = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+                           capture_output=True, text=True, timeout=2)
+        if "MUTED" in (r.stdout or "").upper():
+            return                       # ya estaba mudo: no es cosa mia
+        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1"],
+                       capture_output=True, timeout=2)
+        _audio_lo_silencie_yo = True
+    except (OSError, subprocess.SubprocessError):
+        pass                             # sin wpctl se escucha igual, solo peor
+
+
+def _restaurar_salida() -> None:
+    global _audio_lo_silencie_yo
+    if not _audio_lo_silencie_yo:
+        return
+    _audio_lo_silencie_yo = False
+    try:
+        subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
+                       capture_output=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 # ---------------------------------------------------------------- grabacion
 def _ajustes_escucha():
     """Los tres números de escuchar, desde config.toml."""
@@ -98,7 +137,9 @@ def record_until_silence(max_seconds: float | None = None,
 
     _cancelada.clear()      # una cancelacion vieja no puede matar esta escucha
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, blocksize=BLOCK,
+    _silenciar_salida()
+    try:
+      with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, blocksize=BLOCK,
                         dtype="float32", callback=cb):
         for i in range(max_blocks):
             if _cancelada.is_set():
@@ -182,6 +223,9 @@ def record_until_silence(max_seconds: float | None = None,
             if speaking and silent_blocks > hang_blocks:
                 break                      # terminó de hablar
 
+    finally:
+        _restaurar_salida()
+
     if not frames or spoken_blocks < 3:
         return np.zeros(0, dtype=np.float32)
     return np.concatenate(frames).flatten()
@@ -201,6 +245,7 @@ def ptt_start():
     def cb(indata, frames, time_, status):
         _ptt_frames.append(indata.copy())
 
+    _silenciar_salida()
     _ptt_stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
                                  blocksize=BLOCK, dtype="float32", callback=cb)
     _ptt_stream.start()
@@ -208,6 +253,7 @@ def ptt_start():
 def ptt_stop() -> np.ndarray:
     """Detiene la grabación (al soltar) y devuelve el audio float32 mono 16k."""
     global _ptt_stream, _ptt_frames
+    _restaurar_salida()
     if _ptt_stream is not None:
         try:
             _ptt_stream.stop()
