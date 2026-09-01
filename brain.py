@@ -796,6 +796,19 @@ class Brain:
                     {"id": c.id, "type": "function",
                      "function": {"name": c.function.name,
                                   "arguments": c.function.arguments}} for c in calls]
+                # Gemini 3 firma cada llamada a herramienta y EXIGE que se le
+                # devuelva la firma en la ronda siguiente; si no, corta con
+                # "400: Function call is missing a thought_signature". Aqui se
+                # reconstruye el mensaje campo a campo, asi que la firma se
+                # perdia y Gemini quedaba inservible para cualquier turno con
+                # herramientas. Y de la peor manera: la PRIMERA ronda si se
+                # ejecutaba, o sea que la accion se hacia de verdad y luego
+                # BLUE contestaba que no podia ejecutar acciones. Se copia tal
+                # cual y sin mirar dentro: es opaca y solo la entiende Google.
+                for destino, origen in zip(hist["tool_calls"], calls):
+                    extra = getattr(origen, "extra_content", None)
+                    if extra:
+                        destino["extra_content"] = extra
             self.messages.append(hist)
             if not calls:
                 return (msg.content or "").strip() or \
