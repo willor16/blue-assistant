@@ -13,7 +13,7 @@ El escalafón, de menos a más pesado:
             tiene las herramientas del escritorio y quien narra lo que hacen
             los demás. En esta máquina piensa con el modelo del proveedor
             configurado, porque es el único que sabe llamar herramientas.
-  ORFEO     jarvis-heavy en el Ollama de la otra PC. Razonamiento largo y sin
+  ORFEO     el modelo de casa con prompt de razonar a fondo. Largo y sin
             prisa. No toca el escritorio: se le pregunta y devuelve texto.
   ARGOS     Reservado. Wilmer todavía no lo tiene. Existe el nombre, no el
             motor; si lo llama, se le dice la verdad y se ofrece ORFEO.
@@ -322,8 +322,12 @@ def disponibles(segundos=90) -> dict:
     estado = {
         "PROMETEO": {"ok": bool(cfg.get("api_key") or cfg.get("brain")),
                      "detalle": f"{cfg.get('model', '?')} vía {cfg.get('provider', '?')}"},
-        "ORFEO": {"ok": "jarvis-heavy" in modelos,
-                  "detalle": ("jarvis-heavy en " + ollama_host()) if "jarvis-heavy" in modelos
+        # ORFEO corre en el MISMO modelo que PROMETEO (ver consultar_orfeo): se
+        # comprueba ese, no "jarvis-heavy". Preguntar por un nombre que ya no se
+        # usa daria a ORFEO por caido teniendo el motor delante.
+        "ORFEO": {"ok": _motor_de_casa()[0] in modelos,
+                  "detalle": (_motor_de_casa()[0] + " en " + ollama_host())
+                             if _motor_de_casa()[0] in modelos
                              else "la otra PC no responde"},
         "ARGOS": {"ok": False, "detalle": "reservado, aún no existe"},
         "ICARO": {"ok": bool(shutil.which("hermes")) and HERMES_PERFIL.exists(),
@@ -339,15 +343,19 @@ def disponibles(segundos=90) -> dict:
 # ══════════════════════════════════════════════════════════════
 #  Cambiar de cerebro cuesta tiempo: hay que DECIRLO antes
 # ══════════════════════════════════════════════════════════════
-# jarvis-light (20 GB) y jarvis-heavy (52 GB) no caben a la vez en la memoria
-# de la Mac Studio, así que llamar a ORFEO obliga a Ollama a descargar uno y
-# cargar el otro: entre 15 y 20 segundos en los que BLUE se quedaba MUDA. Y al
-# volver, la siguiente pregunta normal pagaba la recarga de vuelta.
+# Esto NACIÓ porque llamar a ORFEO obligaba a descargar un modelo y cargar otro
+# —entre 15 y 20 segundos con BLUE muda—, y al volver la siguiente pregunta
+# normal pagaba la recarga de vuelta. Wilmer lo dijo claro: que avise antes de
+# empezar y diga por qué, porque un relleno genérico a los 9 segundos no sirve.
 #
-# Wilmer lo dijo claro: que le avise de que lo hará pero tardará. Un relleno
-# genérico a los 9 segundos no sirve — para entonces ya lleva 9 segundos
-# preguntándose si se colgó, y la frase no explica nada. Esto avisa ANTES de
-# empezar y dice por qué.
+# Desde el 01/09/2026 ese intercambio YA NO OCURRE: ORFEO e ÍCARO usan el mismo
+# modelo y la misma ventana que PROMETEO, así que comparten runner y no se
+# desalojan. Medido: ORFEO de ~47 s a 2,5 s, ÍCARO de 30 s a 2-3 s, y la
+# pregunta de después de 28,7 s a 0,4 s.
+#
+# El aviso se queda igualmente. Sigue haciendo falta si el modelo se descargó
+# por inactividad (cargarlo son ~16 s) o si algún día los motores vuelven a ser
+# modelos distintos de verdad.
 
 _PS_CACHE = {"t": 0.0, "modelos": frozenset()}
 _PS_TTL = 3.0
@@ -407,22 +415,41 @@ _ORFEO_GUARD = (
 
 
 def consultar_orfeo(pregunta: str, timeout: float = 240.0) -> str:
-    """Le pasa la pregunta a jarvis-heavy y devuelve su texto, en crudo.
+    """Le pasa la pregunta al modelo de casa con el guard de ORFEO, en crudo.
 
     Se usa el endpoint NATIVO de Ollama con think:false a propósito. Por /v1 los
     modelos de razonamiento gastan la salida en el campo `reasoning` y `content`
     vuelve vacío; con la API nativa y el pensamiento apagado, el texto llega.
     """
+    # MISMO modelo y MISMA ventana que PROMETEO, a proposito.
+    #
+    # ORFEO pedia "jarvis-heavy" con num_ctx 8192 mientras PROMETEO usaba
+    # "jarvis" con 32768. Suenan a dos modelos distintos y NO LO SON: el
+    # 01/09/2026 se comprobo que jarvis, jarvis-heavy, jarvis-light y blue-agent
+    # apuntan TODOS al mismo blob de pesos (sha256-30e51a7c...). Lo unico que
+    # cambia entre ellos es el num_ctx y el prompt.
+    #
+    # Pero a Ollama le basta un num_ctx distinto para montar un runner aparte, y
+    # como son 52 GB no caben dos: cada consulta a ORFEO desalojaba a PROMETEO y
+    # al volver habia que recargarlo entero. Medido en el log de Wilmer:
+    # "cargar modelo 16.0 s | prefijo 12048 tok en 11.6 s FRIO", y turnos de voz
+    # de 68 s con 47 de ellos solo pensando. Todo para acabar en el mismo modelo.
+    #
+    # Pidiendo el mismo nombre y la misma ventana se reutiliza el runner que ya
+    # esta caliente. Lo que hace a ORFEO distinto no son los pesos, es
+    # _ORFEO_GUARD, y ese viaja en la peticion.
+    modelo, ventana = _motor_de_casa()
     cuerpo = json.dumps({
-        "model": "jarvis-heavy",
+        "model": modelo,
         "think": False,
         "stream": False,
-        "options": {"temperature": 0.4, "num_ctx": 8192},
+        "options": {"temperature": 0.4, "num_ctx": ventana},
         "messages": [
             {"role": "system", "content": _ORFEO_GUARD},
             {"role": "user", "content": (pregunta or "").strip()},
         ],
     }).encode()
+    _t0 = time.time()
     req = urllib.request.Request(ollama_host() + "/api/chat", data=cuerpo,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -432,6 +459,18 @@ def consultar_orfeo(pregunta: str, timeout: float = 240.0) -> str:
         return f"(ORFEO no contesta: {e.reason})"
     except Exception as e:
         return f"(ORFEO falló: {e})"
+    # Telemetria, como la de PROMETEO. Sin esto una consulta a ORFEO era un
+    # agujero negro en el log: solo se veia el "pensar 47 s" del turno de voz,
+    # sin poder saber si el tiempo se iba en cargar el modelo, en releer el
+    # prefijo o en generar.
+    _ld = d.get("load_duration", 0) / 1e9
+    _ped = d.get("prompt_eval_duration", 0) / 1e9
+    _ev, _evd = d.get("eval_count", 0), d.get("eval_duration", 0) / 1e9
+    print(f"(ORFEO {time.time() - _t0:.1f} s [{modelo} ctx{ventana}] | "
+          + (f"cargar modelo {_ld:.1f} s | " if _ld > 1 else "")
+          + f"prefijo {d.get('prompt_eval_count', 0)} tok en {_ped:.1f} s "
+          + f"{'FRIO' if _ped > 3 else 'caliente'} | "
+          + f"genera {_ev} tok en {_evd:.1f} s)", flush=True)
     texto = (d.get("message", {}) or {}).get("content", "").strip()
     return texto or "(ORFEO devolvió una respuesta vacía)"
 
@@ -454,6 +493,18 @@ _ICARO_GUARD = (
 # Igual que ÉREBO: la última carpeta donde trabajó ÍCARO y cuándo.
 _ultimo_icaro = {"cwd": None, "cuando": 0.0}
 ICARO_SEGUIR_MINUTOS = 60
+
+
+def _motor_de_casa():
+    """El modelo y la ventana que usa PROMETEO en el Ollama de casa.
+
+    Pedir otra cosa monta un runner aparte y, a 52 GB, eso significa desalojar
+    al que estaba. Se lee de la configuracion para que no haya dos sitios que
+    decidan lo mismo."""
+    for b in (_cfg().get("brain") or []):
+        if b.get("provider") == "ollama":
+            return (b.get("model") or "jarvis"), int(b.get("num_ctx") or 32768)
+    return "jarvis", 32768
 
 
 def _carpeta_de_trabajo() -> str:
