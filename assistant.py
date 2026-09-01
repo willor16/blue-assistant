@@ -133,10 +133,16 @@ class Assistant:
                 print(f"(aviso) cerebro no disponible: {e}")
         # Deja caliente la caché de prompt del cerebro de casa: si no, el primer
         # turno del día se lo come Wilmer esperando con el micrófono abierto.
-        # En un hilo aparte porque son ~25 s y el daemon debe quedar usable ya.
+        # En un hilo aparte porque son ~44 s y el daemon debe quedar usable ya.
+        #
+        # Y NO una sola vez. Antes esto era un hilo de un solo disparo: si el Mac
+        # estaba apagado al arrancar el portátil, fallaba, y el resto del día
+        # cada frase pagaba el prefijo frío (medido: 43,8 s en frío contra 1,8 s
+        # en caliente). Wilmer apaga el Mac a menudo, así que el calentamiento
+        # tiene que ser un vigilante, no un trámite de arranque.
         def _calentar():
             try:
-                print(f"({self.brain().calentar()})", flush=True)
+                self.brain().mantener_caliente()
             except Exception as e:
                 print(f"(aviso) no pude calentar: {e}", flush=True)
         import threading

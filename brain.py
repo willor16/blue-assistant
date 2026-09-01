@@ -893,6 +893,72 @@ class Brain:
             return f"no pude calentar el cerebro de casa: {e}"
         return f"cerebro de casa caliente en {time.time() - ini:.0f} s"
 
+    def mantener_caliente(self, cada: float = 20.0) -> None:
+        """Vigila el cerebro de casa y lo vuelve a calentar cada vez que haga falta.
+
+        `calentar()` corría UNA vez, al arrancar el daemon, y en un hilo que se
+        tragaba el fallo. Con el Mac Studio eso no basta, porque Wilmer lo apaga:
+
+          - Si al arrancar el portátil el Mac está apagado (o el WiFi todavía no
+            ha levantado), el calentamiento falla, imprime un aviso y no se
+            reintenta NUNCA. El resto del día cada turno paga el prefijo frío.
+          - Y cuando el Mac se apaga y vuelve, la caché de prompt se ha ido con
+            él. Nadie la reconstruye hasta el siguiente arranque del daemon.
+
+        Medido el 31/08/2026 contra jarvis-light: el prefijo son 65 herramientas
+        (26,2 KB) más 7,5 KB de prompt, ~9.600 tokens. En frío cuesta 43,8 s; con
+        la caché caliente, 1,8 s. O sea que este hilo es la diferencia entre un
+        "hola" en dos segundos y uno en cuarenta y cinco.
+
+        No adivina si la caché está fría: mira /api/ps. Si el modelo no está
+        cargado, tampoco está su caché. Y no calienta a media conversación, que
+        sería robarle el Mac a Wilmer justo cuando lo está usando.
+        """
+        b = next((x for x in self.backends if x["kind"] == "ollama"), None)
+        if b is None:
+            return
+
+        import threading
+        import time
+        import urllib.request
+
+        def _cargado() -> bool:
+            try:
+                req = urllib.request.Request(b["base"] + "/api/ps")
+                with urllib.request.urlopen(req, timeout=2.0) as r:
+                    d = json.loads(r.read().decode())
+            except Exception:
+                return False
+            corto = (b["model"] or "").split(":")[0]
+            return any((m.get("name") or "").split(":")[0] == corto
+                       for m in d.get("models", []))
+
+        def _ocupada() -> bool:
+            """¿Blue está en mitad de un turno? Entonces el Mac no es mío."""
+            try:
+                import store
+                return store.get_status() not in ("idle", "", None)
+            except Exception:
+                return False
+
+        def _bucle():
+            caliente = False
+            while True:
+                try:
+                    if not _ollama_vivo(b["base"]):
+                        caliente = False          # se apagó: su caché se fue con él
+                    elif _ocupada():
+                        pass                      # ya está trabajando, no estorbo
+                    elif not caliente or not _cargado():
+                        r = self.calentar()
+                        caliente = r.startswith("cerebro de casa caliente")
+                        print(f"({r})", flush=True)
+                except Exception:
+                    caliente = False
+                time.sleep(cada)
+
+        threading.Thread(target=_bucle, daemon=True).start()
+
     def _run_ollama(self, backend) -> str:
         """El cerebro de casa. Sin cupo, y con la caché de prompt de Ollama va
         a un segundo por turno una vez cargado (la primera cuesta unos 20 s).
