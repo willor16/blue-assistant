@@ -19,6 +19,8 @@ class Assistant:
         self._busy = threading.Lock()      # 1 sola conversación a la vez (mic)
         self._brain = None
         self._pending_task = None          # tarea esperando un 'sí' (borrar/instalar)
+        self._modo = None                  # None | "ICARO" | "ORFEO" (ver _modo_intercepta)
+        self._modo_hechos = []             # lo pedido y lo respondido dentro del modo
         # narrador en vivo de protocolos: habla cada paso al ejecutarlo (sin tokens)
         try:
             import protocols
@@ -175,6 +177,18 @@ class Assistant:
             import lines
             import tasks
             store.add("tú", text)
+            # Los modos van ANTES que nada: entrar, salir y contestar dentro de
+            # uno no puede depender de que ningún motor esté libre.
+            _modo = self._modo_intercepta(text)
+            if _modo is not None:
+                store.add("asistente", _modo)
+                if speak:
+                    import voice
+                    store.set_status("speaking")
+                    _v, _eng = self._tts()
+                    voice.speak(_modo, _v, _eng)
+                    store.set_status("idle")
+                return _modo
             # confirmación pendiente de una tarea (borrar/instalar)
             if self._pending_task and self._is_affirmation(text):
                 instr, self._pending_task = self._pending_task, None
@@ -218,9 +232,121 @@ class Assistant:
             return reply
 
     # --------------------------------------- pensar una respuesta (texto->texto)
+    # ═══════════════════════════════════════════════════════════
+    #  Modos: un motor que se queda PUESTO hasta que se le releva
+    # ═══════════════════════════════════════════════════════════
+    def _modo_intercepta(self, text: str):
+        """Entrar en un modo, salir de él, o contestar estando dentro.
+
+        Devuelve la respuesta, o None para que siga el camino de siempre.
+
+        Nombrar a un motor ("Orfeo, explícame X") enruta ESA frase y ya. Un modo
+        es distinto: se queda puesto y todo lo que digas va ahí hasta que lo
+        releves. Wilmer lo pidió para ÍCARO —"es como tener un asistente al
+        teléfono: mientras llama, no le pido otras cosas"— y de paso arregla que
+        "cambia a ORFEO" no hiciera nada.
+
+        Entrar y salir se reconocen con una regla de texto AQUÍ, en el portátil.
+        Para la salida no es un lujo: si la frase de "terminamos" hubiera que
+        mandársela al motor de turno, habría que esperar a que acabara su
+        encargo —minutos— solo para poder salir.
+        """
+        import cerebros
+        if self._modo and cerebros.pide_salir_del_modo(text):
+            return self._salir_del_modo()
+        if not self._modo:
+            pedido = cerebros.modo_pedido(text)
+            return self._entrar_en_modo(pedido) if pedido else None
+        # Dentro del modo. Los atajos que NO tocan ningún modelo siguen valiendo:
+        # subir el volumen o cerrar una ventana no tiene por qué esperar a que
+        # ÍCARO termine de compilar.
+        rapida = router.fast_route(text)
+        if rapida is not None:
+            return rapida
+        import cerebros as _c
+        if self._modo == "ICARO":
+            # Se apunta lo que se pide y lo que sale, para poder contárselo a
+            # PROMETEO al salir sin depender de que nadie lo recuerde.
+            r = _c.consultar_icaro(text)
+            self._modo_hechos.append((text, (r or "")[:180]))
+            return r
+        if self._modo == "ORFEO":
+            # Contesta ÉL, sin que PROMETEO lo vuelva a contar. Esa regla cuesta
+            # una generación entera de más (medido: 2,1 s de ORFEO + 1,9 s de
+            # PROMETEO repitiéndolo) y aquí no aporta: Wilmer ha pedido
+            # expresamente hablar con ORFEO.
+            return _c.consultar_orfeo(text)
+        return _c.consultar_icaro(text)
+
+    def _entrar_en_modo(self, nombre: str) -> str:
+        self._modo = nombre
+        self._modo_hechos = []
+        print(f"(modo {nombre} ACTIVADO)", flush=True)
+        if nombre == "ICARO":
+            return ("Me hago cargo, Wilmer. A partir de ahora hablas conmigo, "
+                    "ÍCARO, y todo lo que digas va al proyecto. Dime «Ícaro, "
+                    "terminamos» cuando quieras que devuelva el mando.")
+        return ("Aquí ORFEO, Wilmer. Pregunta lo que quieras y lo pienso a "
+                "fondo. Dime «terminamos» cuando quieras volver.")
+
+    def _salir_del_modo(self) -> str:
+        anterior, self._modo = self._modo, None
+        print(f"(modo {anterior} CERRADO)", flush=True)
+        if anterior != "ICARO":
+            return "Listo, Wilmer. Vuelvo a ser yo, PROMETEO."
+        # PROMETEO no se ha enterado de NADA de lo que paso en el modo: su
+        # historial se quedo congelado donde lo dejamos. Sin esto, Wilmer sale,
+        # pregunta "¿que hicimos?" y se encuentra un cerebro en blanco.
+        #
+        # El resumen se arma AQUI, con lo que de verdad se pidio y lo que de
+        # verdad contesto ICARO. Se probo pidiendoselo a el y salio mal dos
+        # veces: contesto con una pregunta ("¿a que proyecto te refieres?"), esa
+        # pregunta entro en el historial, y lo siguiente que dijo Wilmer se leyo
+        # como su respuesta —una vez acabo creando una carpeta que nadie pidio—.
+        # Un registro de lo que paso no puede inventarse; un resumen generado,
+        # si. Y de paso salir del modo es instantaneo, sin esperar otra ronda.
+        try:
+            hechos = getattr(self, "_modo_hechos", [])
+            if hechos:
+                lineas = "; ".join(f"le pediste «{p}» y respondió: {r}"
+                                   for p, r in hechos[-6:])
+                resumen = ("Mientras ÍCARO estuvo al mando, " + lineas)
+                # El resumen se mete como CONTEXTO, y la conversación se cierra
+                # con un asentimiento soso.
+                #
+                # Antes se metía el texto de ÍCARO tal cual como turno del
+                # asistente, y eso mordió: el resumen terminaba con una pregunta
+                # ("¿en qué carpeta está?"), así que la siguiente frase de
+                # Wilmer se leyó como la RESPUESTA a esa pregunta. Preguntó
+                # "¿qué hicimos con ÍCARO?" y PROMETEO, creyendo que le estaba
+                # dando un nombre, llamó a crear_carpeta y creó una carpeta de
+                # verdad. Dejar el historial colgando de una pregunta ajena
+                # convierte lo siguiente que digas en una orden.
+                b = self.brain()
+                b.messages.append({
+                    "role": "user",
+                    "content": ("(Contexto, no es una orden ni una pregunta: "
+                                "mientras ÍCARO estuvo al mando hizo esto. "
+                                + resumen + ")")})
+                b.messages.append({"role": "assistant", "content": "Anotado."})
+                # Al historial va el detalle; en voz, una frase. Leer el
+                # registro entero en alto seria interminable.
+                n = len(hechos)
+                return (f"Te devuelvo el mando, Wilmer. ÍCARO se ocupó de "
+                        f"{n} {'encargo' if n == 1 else 'encargos'}; "
+                        "pregúntame por ellos si quieres el detalle.")
+        except Exception as e:
+            print(f"(no pude traer el resumen de ÍCARO: {e})", flush=True)
+        return "Te devuelvo el mando, Wilmer. Vuelvo a ser PROMETEO."
+
     def _respond(self, text: str) -> str:
         import lines
         store.add("tú (voz)", text)
+
+        modo = self._modo_intercepta(text)
+        if modo is not None:
+            store.add("asistente", modo)
+            return modo
 
         # ¿está diciendo que sí a un "¿se la mando a ORFEO?" de hace un momento?
         subir = self._acepta_orfeo(text)

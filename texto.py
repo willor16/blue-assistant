@@ -112,6 +112,16 @@ def para_voz(texto: str) -> str:
     # Un apóstrofo entre letras es parte de la palabra; el resto, fuera.
     t = re.sub(r"(?<![\w])'|'(?![\w])", "", t)
 
+    # Escritura que no es la nuestra: fuera.
+    #
+    # El modelo de casa es Qwen3, entrenado con muchísimo chino, y de vez en
+    # cuando se le cuela un token: el 01/09/2026 contestó "si necesitas que haga
+    # algo具体" — dos ideogramas en mitad de una frase en español. Kokoro no
+    # sabe leerlos y los pronuncia como puede, o se atasca. En pantalla se
+    # quedarían, pero esto es solo para la voz.
+    t = re.sub(r"[\u3000-\u9fff\uf900-\ufaff\uff00-\uffef"
+               r"\u0400-\u04ff\u0600-\u06ff\u0900-\u097f]+", " ", t)
+
     return re.sub(r"\s+", " ", t).strip()
 
 

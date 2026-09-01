@@ -212,6 +212,56 @@ _ALIAS = {
     "EREBO":    r"[hj]?ere[bv][oa]s?|[hj]?ere[bv]u[ms]|[hj]?ereb",
 }
 
+# ══════════════════════════════════════════════════════════════
+#  Entrar y salir de un MODO (que se queda puesto)
+# ══════════════════════════════════════════════════════════════
+# Nombrar a un motor enruta ESA frase y nada mas. Un modo es otra cosa: se queda
+# puesto hasta que se diga lo contrario, y mientras dure NO se consulta a nadie
+# para saber si sigue puesto.
+#
+# Por eso entrar y salir se reconocen aqui, con una regla de texto y en el
+# portatil. Es imprescindible para la salida: si la frase de "terminamos" se le
+# mandara al motor de turno, habria que esperar a que acabase su encargo —que
+# pueden ser dos minutos— solo para poder salir. El freno tiene que estar del
+# lado de Wilmer, no del lado de lo que se atasco.
+_ENTRAR_MODO = {
+    "ICARO": re.compile(
+        r"^\s*(?:" + _ALIAS["ICARO"] + r")\b[\s,:.\-—]*"
+        r"(?:es\s+tu\s+turno(?:[\s,:.\-—]+hazte\s+cargo)?|hazte\s+cargo|"
+        r"toma\s+el\s+control|encargate(?:\s+tu)?)\b", re.IGNORECASE),
+    "ORFEO": re.compile(
+        r"^\s*(?:" + _ALIAS["ORFEO"] + r")\b[\s,:.\-—]*"
+        r"(?:es\s+tu\s+turno(?:[\s,:.\-—]+hazte\s+cargo)?|hazte\s+cargo|"
+        r"toma\s+el\s+control|encargate(?:\s+tu)?)\b|"
+        r"^\s*cambia(?:\s+de\s+cerebro)?\s+a\s+(?:" + _ALIAS["ORFEO"] + r")\b",
+        re.IGNORECASE),
+}
+
+# La salida vale para cualquier modo: no hay que acertar el nombre del que esta
+# puesto. Y "para" a secas NO sale del modo, solo calla: son cosas distintas.
+_SALIR_MODO = re.compile(
+    r"^\s*(?:" + _ALIAS["ICARO"] + r"|" + _ALIAS["ORFEO"] + r")?\b[\s,:.\-—]*"
+    r"(?:eso\s+es\s+todo[\s,:.\-—]*(?:terminamos)?|terminamos|hemos\s+terminado|"
+    r"es\s+hora\s+de\s+descansar|ya\s+puedes\s+descansar|vuelve[\s,:.\-—]*"
+    r"(?:blue)?|sal\s+del\s+modo|volvemos\s+a\s+la\s+normalidad)\b",
+    re.IGNORECASE)
+
+
+def modo_pedido(texto: str):
+    """¿Esta frase pide ENTRAR en un modo? Devuelve el nombre o None."""
+    plano = _sin_tildes((texto or "").strip()).lower()
+    for nombre, rx in _ENTRAR_MODO.items():
+        if rx.search(plano):
+            return nombre
+    return None
+
+
+def pide_salir_del_modo(texto: str) -> bool:
+    """¿Esta frase pide VOLVER a la normalidad?"""
+    plano = _sin_tildes((texto or "").strip()).lower()
+    return bool(_SALIR_MODO.search(plano))
+
+
 # Se dirige a uno de dos maneras. O lo llama por delante ("Orfeo, explícame…"),
 # o lo nombra a mitad de frase para decir QUIÉN debe hacerlo ("...utilizando el
 # cerebro de Érebo"). En el segundo caso el encargo NO es lo que viene detrás
