@@ -56,6 +56,7 @@ def record_until_silence(max_seconds: float | None = None,
     max_seconds = cfg_max if max_seconds is None else max_seconds
     silence_hang = cfg_hang if silence_hang is None else silence_hang
 
+    umbral_a_mano = silence_threshold is not None   # solo las pruebas lo fijan
     auto = silence_threshold is None and cfg_umbral == "auto"
     if silence_threshold is None:
         silence_threshold = 0.012 if auto else float(cfg_umbral)
@@ -84,7 +85,15 @@ def record_until_silence(max_seconds: float | None = None,
     # "Suelen": si Wilmer empieza a hablar de inmediato, esa ventana lleva voz
     # y no sirve. Se detecta y se descarta, porque un umbral sacado de la propia
     # voz queda por encima de ella y el micro se queda sordo.
-    calibrar = int(0.4 * blocks_per_sec) if auto else 0
+    # Se mide el cuarto en CADA escucha, no solo con umbral "auto". Un numero
+    # fijo en config.toml solo vale mientras el ruido no se mueva, y se mueve:
+    # medido el 31/08/2026 con el umbral en 0,02, nueve de cada setenta y ocho
+    # bloques de PURO RUIDO ya lo superaban. Con eso el ruido marca "esta
+    # hablando" en el primer bloque, y eso apaga el corte por start_timeout —el
+    # que existe justo para cuando Wilmer aun no ha abierto la boca—, asi que
+    # todo lo que tarde en arrancar se graba. Medido: 13,25 s de grabacion para
+    # una frase de unos cinco, y Whisper cobrandolos otra vez al transcribir.
+    calibrar = 0 if umbral_a_mano else int(0.8 * blocks_per_sec)
     fondo: list[float] = []
 
     _cancelada.clear()      # una cancelacion vieja no puede matar esta escucha
@@ -115,7 +124,24 @@ def record_until_silence(max_seconds: float | None = None,
                 if pico > suelo * 5.0:
                     pass          # esa ventana llevaba voz: no me fío, dejo el fijo
                 else:
-                    silence_threshold = max(0.006, min(0.05, suelo * 3.0))
+                    # Por encima del ruido MEDIDO, no del que hubo el dia de la
+                    # calibracion. El pico y no la mediana: basta un parpadeo por
+                    # encima para reiniciar la cuenta del silencio y que la frase
+                    # no termine nunca.
+                    medido = max(0.006, min(0.12, pico * 1.3))
+                    # En "auto" manda el cuarto. Con un numero en config.toml,
+                    # ese numero es un SUELO: se sube si el cuarto suena mas de
+                    # lo que se calibro, nunca se baja.
+                    silence_threshold = (medido if auto
+                                         else max(silence_threshold, medido))
+                    # Y lo que el ruido habia marcado como voz durante esta
+                    # ventana no era voz: se borra. Si Wilmer estaba hablando de
+                    # verdad, el bloque siguiente lo vuelve a marcar. Sin esto,
+                    # el latigazo inicial del ruido deja 'speaking' encendido y
+                    # start_timeout sigue sin poder cortar.
+                    speaking = False
+                    spoken_blocks = 0
+                    silent_blocks = 0
 
             nivel.append(rms)
 

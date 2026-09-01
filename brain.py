@@ -521,6 +521,15 @@ def _prompt_base(activos=None) -> str:
                         if not any(b.startswith(h) for h in fuera))
 
 
+def _sin_claves(texto: str) -> str:
+    """Quita cualquier clave de un texto que va a acabar en el log.
+
+    Los mensajes de error de los proveedores a veces arrastran la cabecera de
+    autorizacion entera. El log de BLUE no es sitio para eso."""
+    import re
+    return re.sub(r"(gsk_|sk-|AIza)[A-Za-z0-9_\-]{8,}", r"\1[OCULTA]", texto)
+
+
 def _system_content(activos=None) -> str:
     """SYSTEM_PROMPT + proyecto activo + memoria persistente del ámbito actual."""
     out = _prompt_base(activos)
@@ -1128,6 +1137,8 @@ class Brain:
                         # siguiente ya usa el que se encuentre.
                         _buscar_ollama_en_segundo_plano(b)
                         b["cooldown_until"] = now + 10    # reintento en 10 s
+                        print(f"(cerebro de casa sin responder en {b['base']}: "
+                              "tiro de la nube y lo busco por la red)", flush=True)
                         continue
                     b["cooldown_until"] = 0.0             # vivo: se le quita el veto
                 elif now < b["cooldown_until"]:  # falló hace poco: salta
@@ -1150,6 +1161,17 @@ class Brain:
                 except Exception as e:
                     last_err = e
                     b["cooldown_until"] = time.time() + self._reposo(e)
+                    # Esto era INVISIBLE: el fallo se guardaba en last_err y se
+                    # pasaba al siguiente sin decir nada. El 31/08/2026 se cayo
+                    # la cadena ENTERA —Ollama, los tres de Groq y Gemini— y
+                    # Wilmer acabo hablando con el ultimo recurso, sin
+                    # herramientas y tras 18 s. No habia manera de saber quien
+                    # habia fallado ni por que: ni una linea en el log. Un
+                    # fallback silencioso es peor que uno ruidoso, porque
+                    # degrada a BLUE sin que nadie pueda arreglarlo.
+                    print(f"(cerebro caido: {b.get('model')} [{b['kind']}] "
+                          f"-> {type(e).__name__}: "
+                          f"{_sin_claves(str(e))[:200]})", flush=True)
                     continue
             if vuelta == 0:
                 espera = min((b["cooldown_until"] for b in self.backends),
