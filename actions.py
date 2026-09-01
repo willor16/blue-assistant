@@ -6,6 +6,7 @@ ve Gemini y (2) los pasos guardados en los protocolos.
 """
 from __future__ import annotations
 import os
+import re
 import shlex
 import subprocess
 import urllib.parse
@@ -14,6 +15,26 @@ from pathlib import Path
 TERMINAL = "foot"
 BROWSER = "google-chrome-stable"
 
+
+def _primero_instalado(*candidatos: str) -> str:
+    """El primero de la lista que exista de verdad en esta maquina."""
+    import shutil
+    return next((c for c in candidatos if shutil.which(c)), "")
+
+
+# El gestor de archivos NO se puede dar por sentado. Estaba escrito "nautilus"
+# a pelo, y en la maquina de Wilmer no esta instalado (hay dolphin y thunar):
+# "abre la carpeta de archivos" lanzaba un binario inexistente y BLUE contestaba
+# "Archivos abiertos" igual de contenta. El silencio venia de _exec_detached, que
+# da por bueno el intento en cuanto hyprctl acepta la peticion —y hyprctl la
+# acepta aunque el programa no exista, porque solo hace el fork—. Por eso aqui
+# se comprueba ANTES de lanzar, como ya hacia open_application.
+#
+# Tampoco vale tirar de `xdg-open`: en esta maquina el manejador por defecto de
+# inode/directory es kitty-open.desktop, o sea que abriria una terminal.
+FILE_MANAGER = _primero_instalado("nautilus", "dolphin", "thunar", "nemo",
+                                  "caja", "pcmanfm-qt", "pcmanfm")
+
 # nombre hablado -> comando a ejecutar
 APP_MAP = {
     "spotify": "spotify-launcher",
@@ -21,8 +42,9 @@ APP_MAP = {
     "brave": "brave",
     "firefox": "firefox",
     "code": "code", "vscode": "code", "visual studio code": "code", "editor": "code",
-    "archivos": "nautilus", "files": "nautilus", "gestor de archivos": "nautilus",
-    "dolphin": "dolphin",
+    "archivos": FILE_MANAGER, "files": FILE_MANAGER,
+    "gestor de archivos": FILE_MANAGER, "carpeta": FILE_MANAGER,
+    "carpetas": FILE_MANAGER, "explorador": FILE_MANAGER,
     "terminal": TERMINAL, "consola": TERMINAL, "kitty": "kitty",
     "evince": "evince", "documentos": "evince", "lector": "evince", "pdf": "evince",
     "calculadora": "gnome-calculator", "calc": "gnome-calculator",
@@ -104,9 +126,75 @@ def toggle_mute() -> str:
 
 
 # ----------------------------------------------------------------- media
+# Control de musica por MPRIS (D-Bus), no por playerctl.
+#
+# Todo esto llamaba a `playerctl`, que NO esta instalado en la maquina de
+# Wilmer. `_run` no atrapa OSError, asi que la primera linea de _pick_player
+# levantaba FileNotFoundError: "pausa la musica" no fallaba con un mensaje util,
+# reventaba, y lo unico que le llegaba al cerebro era "(error en media_control:
+# [Errno 2] No such file or directory: 'playerctl')". Por eso ninguna orden de
+# musica funciono nunca.
+#
+# MPRIS es el mismo protocolo que playerctl usa por debajo, y se habla con
+# `gdbus`, que viene dentro de glib y ya esta en el sistema. Asi se arregla
+# dentro de BLUE, sin instalar paquetes.
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_IFACE = "org.mpris.MediaPlayer2.Player"
+
+
+def _gdbus(*args: str) -> subprocess.CompletedProcess | None:
+    """Una llamada a gdbus. None si ni siquiera se pudo lanzar."""
+    try:
+        return _run(["gdbus", "call", "--session", *args])
+    except OSError:
+        return None
+
+
+def _mpris_players() -> list[str]:
+    """Los reproductores que ahora mismo estan en el bus de sesion."""
+    r = _gdbus("-d", "org.freedesktop.DBus", "-o", "/org/freedesktop/DBus",
+               "-m", "org.freedesktop.DBus.ListNames")
+    if r is None or r.returncode != 0:
+        return []
+    return re.findall(r"org\.mpris\.MediaPlayer2\.[\w.-]+", r.stdout or "")
+
+
+def _mpris_prop(player: str, prop: str) -> str:
+    r = _gdbus("-d", player, "-o", MPRIS_PATH,
+               "-m", "org.freedesktop.DBus.Properties.Get", MPRIS_IFACE, prop)
+    if r is None or r.returncode != 0:
+        return ""
+    m = re.search(r"'(.*)'", r.stdout or "")
+    return m.group(1) if m else ""
+
+
+def _mpris_meta(player: str) -> dict:
+    """Artista y titulo de lo que suena. gdbus lo devuelve como texto GVariant,
+    y de ahi solo hacen falta dos campos:
+        'xesam:artist': <['OneRepublic']>, 'xesam:title': <'Something I Need'>
+    """
+    r = _gdbus("-d", player, "-o", MPRIS_PATH,
+               "-m", "org.freedesktop.DBus.Properties.Get", MPRIS_IFACE,
+               "Metadata")
+    if r is None or r.returncode != 0:
+        return {}
+    texto = r.stdout or ""
+    out = {}
+    for campo, clave in (("xesam:title", "title"), ("xesam:artist", "artist")):
+        m = re.search(re.escape(campo) + r"': <\[?'([^']*)'", texto)
+        if m:
+            out[clave] = m.group(1)
+    return out
+
+
+def _mpris_call(player: str, metodo: str) -> bool:
+    r = _gdbus("-d", player, "-o", MPRIS_PATH, "-m", f"{MPRIS_IFACE}.{metodo}")
+    return r is not None and r.returncode == 0
+
+
 def _pick_player(prefer: str | None = None) -> str | None:
     """Elige el reproductor correcto cuando hay varios (Brave, Spotify, etc.)."""
-    players = _run(["playerctl", "-l"]).stdout.split()
+    players = _mpris_players()
     if not players:
         return None
     if prefer:                                   # si pidieron uno concreto
@@ -114,7 +202,7 @@ def _pick_player(prefer: str | None = None) -> str | None:
             if prefer.lower() in p.lower():
                 return p
     for p in players:                            # el que esté REPRODUCIENDO
-        if _run(["playerctl", "-p", p, "status"]).stdout.strip() == "Playing":
+        if _mpris_prop(p, "PlaybackStatus") == "Playing":
             return p
     for p in players:                            # si no, prefiere Spotify
         if "spotify" in p.lower():
@@ -132,11 +220,17 @@ def media_control(action: str, player: str | None = None) -> str:
         "stop": "stop", "detener": "stop",
     }
     cmd = mapping.get(action, "play-pause")
+    metodos = {"play": "Play", "pause": "Pause", "play-pause": "PlayPause",
+               "next": "Next", "previous": "Previous", "stop": "Stop"}
     target = _pick_player(player)
     if not target:
         return "No hay ningún reproductor activo"
-    _run(["playerctl", "-p", target, cmd])
-    name = target.split(".")[0]
+    # Y se comprueba que la orden se aceptara, en vez de darla por buena.
+    if not _mpris_call(target, metodos[cmd]):
+        return f"No pude {action} la música: el reproductor no aceptó la orden"
+    # El nombre bonito es el ULTIMO trozo del nombre del bus. Con `split(".")[0]`
+    # sobre "org.mpris.MediaPlayer2.spotify" BLUE decia "Pausado en org".
+    name = target.rsplit(".", 1)[-1]
     verbs = {"pause": "Pausado", "play": "Reproduciendo", "next": "Siguiente",
              "previous": "Anterior", "stop": "Detenido", "play-pause": "Listo"}
     return f"{verbs.get(cmd, 'Listo')} en {name}"
@@ -219,7 +313,11 @@ def open_terminal_run(path: str = "~", command: str = "", terminal: str = "kitty
 
 def open_files_at(path: str = "~") -> str:
     p = os.path.expanduser(path)
-    _exec_detached(f"nautilus {shlex.quote(p)}")
+    if not FILE_MANAGER:
+        return ("No tengo ningún gestor de archivos que abrir: no encontré "
+                "nautilus, dolphin, thunar, nemo, caja ni pcmanfm")
+    if not _exec_detached(f"{FILE_MANAGER} {shlex.quote(p)}"):
+        return f"No pude abrir la carpeta {path}: falló el lanzamiento"
     return f"Archivos abiertos en {path}"
 
 def open_project(path: str) -> str:

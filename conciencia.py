@@ -140,10 +140,25 @@ def _escritorio():
 
 
 def _sonando():
-    m = _cmd(["playerctl", "metadata", "--format", "{{artist}} - {{title}}"])
-    if m and _cmd(["playerctl", "status"]).lower().startswith("playing"):
-        return m
-    return ""
+    """Qué suena ahora mismo, preguntándoselo al reproductor por MPRIS.
+
+    Antes se lo preguntaba a `playerctl`, que no está instalado: `_cmd` se
+    tragaba el FileNotFoundError y esto devolvía "" siempre. O sea que BLUE
+    jamás supo qué estaba sonando, y no había forma de notarlo."""
+    try:
+        import actions
+    except Exception:
+        return ""
+    player = actions._pick_player()
+    if not player:
+        return ""
+    if actions._mpris_prop(player, "PlaybackStatus") != "Playing":
+        return ""
+    meta = actions._mpris_meta(player)
+    titulo, artista = meta.get("title", ""), meta.get("artist", "")
+    if titulo and artista:
+        return f"{artista} - {titulo}"
+    return titulo or ""
 
 
 def _totales():
