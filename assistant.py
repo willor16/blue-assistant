@@ -131,22 +131,22 @@ class Assistant:
                 self.brain()
             except Exception as e:
                 print(f"(aviso) cerebro no disponible: {e}")
-        # Deja caliente la caché de prompt del cerebro de casa: si no, el primer
-        # turno del día se lo come Wilmer esperando con el micrófono abierto.
-        # En un hilo aparte porque son ~44 s y el daemon debe quedar usable ya.
+        # Aquí había un vigilante que cada 20 s mandaba un /api/chat entero solo
+        # para dejar caliente la caché de prompt. Se quitó el 01/09/2026, por
+        # dos razones y las dos medidas:
         #
-        # Y NO una sola vez. Antes esto era un hilo de un solo disparo: si el Mac
-        # estaba apagado al arrancar el portátil, fallaba, y el resto del día
-        # cada frase pagaba el prefijo frío (medido: 43,8 s en frío contra 1,8 s
-        # en caliente). Wilmer apaga el Mac a menudo, así que el calentamiento
-        # tiene que ser un vigilante, no un trámite de arranque.
-        def _calentar():
-            try:
-                self.brain().mantener_caliente()
-            except Exception as e:
-                print(f"(aviso) no pude calentar: {e}", flush=True)
-        import threading
-        threading.Thread(target=_calentar, daemon=True).start()
+        #  - Ya no hace falta tanto. Con el Gemma4 de 31B el prefijo en frío
+        #    costaba 30-44 s, y evitarlo justificaba el vigilante. Con `jarvis`
+        #    (80B MoE) el mismo prefijo cuesta 8,9 s en frío y 0,8 s en
+        #    caliente: la primera pregunta tras un silencio pasa de ~1 s a ~9 s,
+        #    y solo esa.
+        #  - Y salía caro en la otra punta. Cada sondeo obligaba al Mac a
+        #    mantener 52 GB de modelo residentes, que es memoria que Wilmer
+        #    quiere para otras cosas.
+        #
+        # Lo que NO se quitó es calentar() a secas: _recalentar_titular() lo
+        # sigue llamando al volver de una consulta pesada a ORFEO o a ÍCARO,
+        # que es cuando de verdad se pierde la caché.
 
         # Y el toolbox de ingeniería (pint, CoolProp, fluids, ht, Pynite). Son
         # 2 s de importación y ~119 MB que, si no se hacen aquí, se los come la
@@ -429,22 +429,46 @@ class Assistant:
         subprocess.run(["notify-send", "-a", "Blue", "-t", "2000",
                         "Blue está ocupada", que.capitalize()], check=False)
 
-    def handle_voice(self) -> bool:
-        if not self._busy.acquire(blocking=False):
+    def handle_voice(self, espera: float = 0.0) -> bool:
+        """`espera` = segundos de gracia para tomar el cerrojo.
+
+        Super+J manda primero SIGUSR1 (corta la voz) y despues "listen". Entre
+        las dos cosas el turno anterior todavia se esta desmontando y aun tiene
+        `_busy`, asi que con acquire() a secas la orden se perdia y Blue
+        contestaba "estoy hablando" al que acababa de mandarla callar. Un par de
+        segundos de gracia bastan para que el barge-in termine de surtir efecto.
+        Sin espera (0.0) el comportamiento es el de antes."""
+        tomado = (self._busy.acquire(timeout=espera) if espera > 0
+                  else self._busy.acquire(blocking=False))
+        if not tomado:
             # Antes esto era mudo: pulsabas Super+J, no pasaba nada, y no habia
             # forma de saber si te habia oido. Ahora al menos lo dice.
             self._avisar_ocupada()
             return False                       # ya hay una conversación activa
         try:
+            import time as _t
             import voice
+            # Cronometro por fases. La lentitud de un turno se reparte entre
+            # cuatro cosas —esperar a que Wilmer calle, transcribir, pensar y
+            # empezar a hablar— y hasta ahora no habia forma de saber cual
+            # pesaba. Sin este desglose cada diagnostico era una conjetura.
+            _t0 = _t.time()
             voice.nuevo_turno()          # turno nuevo: se levanta el silencio
             store.set_status("listening")
             audio = voice.record_until_silence()
+            _t_grab = _t.time() - _t0
             if audio.size == 0:
                 store.set_status("idle")
+                print(f"(turno de voz: grabar {_t_grab:.1f} s, sin audio)",
+                      flush=True)
                 return False
             store.set_status("thinking")
+            _t1 = _t.time()
             text = voice.transcribe(audio, self.cfg["whisper_size"])
+            _t_trans = _t.time() - _t1
+            print(f"(turno de voz: grabar {_t_grab:.1f} s | "
+                  f"transcribir {_t_trans:.1f} s [{self.cfg['whisper_size']}] "
+                  f"-> {text!r})", flush=True)
             v, eng = self._tts()
             if not text:
                 import lines
@@ -470,12 +494,19 @@ class Assistant:
             if instr:
                 self._run_task_voice(instr)
                 return True
+            _t2 = _t.time()
             reply = self._responder_avisando(text, v, eng)
+            _t_pensar = _t.time() - _t2
             if store.abortado() or not reply:
                 store.set_status("idle")     # le dio a parar mientras pensaba
                 return False
             store.set_status("speaking")
+            _t3 = _t.time()
             voice.speak(reply, v, eng)
+            print(f"(turno de voz COMPLETO {_t.time() - _t0:.1f} s = "
+                  f"grabar {_t_grab:.1f} + transcribir {_t_trans:.1f} + "
+                  f"pensar {_t_pensar:.1f} + hablar {_t.time() - _t3:.1f})",
+                  flush=True)
             store.set_status("idle")
             return True
         finally:

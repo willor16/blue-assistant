@@ -304,22 +304,66 @@ def main():
             assistant.speak(lines.greeting())
         except Exception:
             pass
+        # El turno se atiende en un HILO, no en este bucle.
+        #
+        # Antes se ejecutaba aqui mismo: mientras Blue grababa, pensaba o
+        # hablaba, este bucle no volvia a `open(FIFO)` y el FIFO se quedaba SIN
+        # LECTOR. Entonces Super+J caia en el O_NONBLOCK de _mandar(), daba
+        # ENXIO y saltaba la notificacion "Blue no responde. Esta viva pero
+        # atascada" — que era mentira: estaba trabajando, no atascada. Ese es el
+        # motivo de que "pausa la musica" pulsado mientras Blue hablaba no
+        # llegara nunca al daemon: la orden no se perdia dentro de Blue, es que
+        # no entraba.
+        #
+        # No hace falta control de concurrencia aqui: handle_voice y converse ya
+        # toman el cerrojo `_busy` y avisan en voz alta si hay un turno en curso.
+        def _atender(cmd: str) -> None:
+            try:
+                if cmd.startswith("ptt-start"):
+                    assistant.ptt_start()
+                elif cmd.startswith("ptt-stop"):
+                    assistant.ptt_stop()
+                elif cmd.startswith("converse"):
+                    assistant.converse()
+                elif cmd.startswith("listen"):
+                    # 2 s de gracia: Super+J acaba de mandar SIGUSR1 y el turno
+                    # anterior todavia esta soltando el cerrojo.
+                    assistant.handle_voice(espera=2.0)
+            except Exception as e:
+                print(f"(error en interacción: {e})", flush=True)
+                store.set_status("idle")
+
+        # El FIFO se abre UNA VEZ y en lectura-escritura, y no se cierra jamas.
+        #
+        # Antes se hacia `with open(FIFO) as f:` dentro del bucle. Eso deja un
+        # hueco: al salir del `with` el descriptor se cierra, y hasta que la
+        # vuelta siguiente lo reabre NO HAY LECTOR. Quien pulse Super+J justo en
+        # ese instante cae en el O_NONBLOCK de _mandar(), recibe ENXIO y ve
+        # "Blue no responde. Esta viva pero atascada" — con Blue perfectamente
+        # sana y de brazos cruzados. Es una ventana de microsegundos, pero se
+        # abre en CADA orden, asi que aparece sola con el uso.
+        #
+        # Con O_RDWR el propio daemon mantiene tambien un extremo de escritura
+        # abierto: nunca hay "sin lector" para quien escribe, y del lado de la
+        # lectura nunca llega EOF, asi que readline() simplemente espera. El
+        # hueco desaparece del todo en vez de hacerse mas pequeno.
+        fifo_fd = os.open(str(FIFO), os.O_RDWR)
         try:
-            while True:
-                with open(FIFO) as f:
-                    cmd = f.read().strip()
-                try:
-                    if cmd.startswith("ptt-start"):
-                        assistant.ptt_start()
-                    elif cmd.startswith("ptt-stop"):
-                        assistant.ptt_stop()
-                    elif cmd.startswith("converse"):
-                        assistant.converse()
-                    elif cmd.startswith("listen"):
-                        assistant.handle_voice()
-                except Exception as e:
-                    print(f"(error en interacción: {e})")
-                    store.set_status("idle")
+            with os.fdopen(fifo_fd, "r", buffering=1) as f:
+              while True:
+                cmd = (f.readline() or "").strip()
+                if not cmd:
+                    continue
+                if cmd.startswith("ptt-start"):
+                    # En linea a proposito. Es instantaneo —abre el stream del
+                    # microfono y vuelve— y asi queda garantizado que ocurre
+                    # ANTES del ptt-stop que llega al soltar la tecla. En un
+                    # hilo las dos ordenes podrian adelantarse entre si y
+                    # pararia una grabacion que aun no habia empezado.
+                    _atender(cmd)
+                else:
+                    threading.Thread(target=_atender, args=(cmd,),
+                                     daemon=True).start()
         except KeyboardInterrupt:
             store.set_status("idle")
             FIFO.unlink(missing_ok=True)
