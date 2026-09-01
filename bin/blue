@@ -10,4 +10,7 @@
 #
 # Código en ~/.local/share/blue/  ·  datos en ~/.config/blue/
 cd "$HOME/.local/share/blue" || exit 1
-exec ./.venv/bin/python blue.py "$@"
+# -u = salida sin buffer. Con buffer, /tmp/jd.log se escribia a bloques y las
+# lineas aparecian tarde o se perdian si el proceso moria: justo lo contrario de
+# lo que hace falta en el sitio donde ahora se miran los tiempos de cada turno.
+exec ./.venv/bin/python -u blue.py "$@"

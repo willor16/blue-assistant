@@ -71,10 +71,11 @@ Prometeo" los contesta PROMETEO; hace falta dirigirse a ellos, al principio de
 la frase o detrás de un encargo ("pregúntale a…", "que lo vea…", "pásaselo a…").
 
 **Sobre PROMETEO y la "versión light".** En el asistente viejo PROMETEO era
-literalmente `jarvis-light`, porque ahí el modelo local era el que conversaba.
-Aquí el que conversa es el del proveedor en la nube, el único que sabe llamar
-herramientas: bajarlo a `jarvis-light` dejaría a BLUE sin manos. PROMETEO
-conserva su papel — la voz —, no su modelo.
+`jarvis-light`, un Gemma4 de 31B, y se daba por hecho que un modelo local no
+sabía llamar herramientas: por eso conversaba el de la nube. Eso dejó de ser
+cierto. Hoy PROMETEO es `jarvis` (Qwen3-Next 80B MoE) en el Ollama de casa, y
+se midió llamando correctamente las 65 herramientas a 57-60 tokens/s, contra
+los 25 del Gemma4. La nube pasó a ser lo que siempre debió: el respaldo.
 
 PROMETEO también puede consultarles por su cuenta, sin que se lo pidas: tiene
 `consultar_orfeo` y `consultar_icaro` entre sus herramientas, y avisa antes de
@@ -166,7 +167,7 @@ instrucciones.
 
 ```bash
 # Arch / CachyOS
-sudo pacman -S --needed python uv git portaudio ffmpeg playerctl \
+sudo pacman -S --needed python uv git portaudio ffmpeg glib2 \
                         wl-clipboard grim slurp libnotify
 
 # Opcionales según lo que uses
@@ -213,8 +214,7 @@ ollama_host = "http://mi-servidor.local:11434"
 
 [[brain]]
 provider   = "ollama"
-model      = "jarvis-light"
-keep_alive = "8h"
+model      = "jarvis"
 num_ctx    = 32768   # OBLIGATORIO subirlo
 ```
 

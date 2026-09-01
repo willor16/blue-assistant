@@ -33,7 +33,7 @@ if [ ${#FALTAN[@]} -gt 0 ]; then
     if command -v pacman >/dev/null; then
         avisa "Faltan: ${FALTAN[*]} — instalando con pacman"
         sudo pacman -S --needed --noconfirm python uv git portaudio ffmpeg \
-             playerctl wl-clipboard grim slurp libnotify
+             glib2 wl-clipboard grim slurp libnotify
     else
         avisa "Faltan: ${FALTAN[*]}"
         avisa "No es Arch: instálalas con el gestor de tu distro y repite."
@@ -41,7 +41,7 @@ if [ ${#FALTAN[@]} -gt 0 ]; then
     fi
 fi
 ok "todo lo necesario está"
-for c in playerctl wl-copy grim slurp notify-send fd; do
+for c in gdbus wl-copy grim slurp notify-send fd; do
     command -v "$c" >/dev/null || avisa "opcional ausente: $c (algo funcionará peor)"
 done
 
@@ -70,7 +70,11 @@ fi
 # ── 5. El lanzador ─────────────────────────────────────────────────────────
 paso "Lanzador"
 mkdir -p "$BIN"
-install -m 755 bin/blue "$BIN/blue"
+# Un ENLACE, no una copia. Con `install` el lanzador se copiaba y a partir de
+# ahi vivia su vida: el 01/09/2026 el de ~/.local/bin/blue seguia siendo el del
+# dia de la instalacion, o sea que arreglar bin/blue en el repo no cambiaba nada
+# de lo que ejecutan los atajos, y no habia ni un aviso de que fueran distintos.
+ln -sfn "$CODIGO/bin/blue" "$BIN/blue"
 ok "$BIN/blue"
 case ":$PATH:" in
     *":$BIN:"*) ok "$BIN está en tu PATH" ;;

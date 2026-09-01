@@ -538,6 +538,13 @@ def _persist_kv(key: str, val: str):
 
 
 def run_server(assistant):
+    # La burbuja y el panel piden /api/state UNA VEZ POR SEGUNDO cada uno. El
+    # log de acceso de Werkzeug escribia una linea por cada peticion: 86.400
+    # lineas al dia de puro ruido que sepultaban lo unico que importa ahi
+    # —los avisos de cerebro caido y los tiempos de cada turno—. El 31/08/2026
+    # /tmp/jd.log tenia 575 KB y practicamente todo era esto.
+    import logging
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
     app = create_app(assistant)
     app.run(host="127.0.0.1", port=PORT, threaded=True,
             use_reloader=False, debug=False)
