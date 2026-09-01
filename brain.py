@@ -573,7 +573,39 @@ def _system_content(activos=None) -> str:
     return out
 
 
-def _ollama_vivo(base: str, plazo: float = 0.35) -> bool:
+# Cuanto se espera como maximo a una respuesta del cerebro de casa.
+#
+# Estaba en 300 s. Con el Mac medio dormido —acepta la conexion pero tarda una
+# eternidad en contestar— eso son CINCO MINUTOS con la interfaz diciendo
+# "pensando" y sin forma de cortar, porque una peticion HTTP ya lanzada no se
+# puede abortar. Eso es exactamente lo que se siente como que BLUE se trabo.
+# El peor caso legitimo medido es bastante menor: cargar el modelo de disco mas
+# releer el prefijo en frio (29-37 s medidos), o sea ~60 s. 120 s deja el doble
+# de margen y convierte el cuelgue de cinco minutos en un fallo de dos, tras el
+# cual la cadena se va a la nube y BLUE contesta.
+ESPERA_OLLAMA_S = 120
+
+
+def _plazo_vivo() -> float:
+    """Cuanto se espera al socket antes de dar el Ollama por muerto.
+
+    0,35 s va bien en la LAN, pero desde OTRA RED (por VPN) un connect de mas
+    de 350 ms es de lo mas normal — y como este plazo es un deadline duro, BLUE
+    daria el Mac por apagado y se iria a la nube EN SILENCIO. Por eso se puede
+    subir desde config.toml sin tocar codigo:
+
+        ollama_plazo_s = 3.0
+
+    El coste de subirlo es que, con el Mac de verdad apagado, cada turno espera
+    ese plazo antes de rendirse."""
+    try:
+        import config
+        return float(config.load().get("ollama_plazo_s") or 0.35)
+    except Exception:
+        return 0.35
+
+
+def _ollama_vivo(base: str, plazo: float | None = None) -> bool:
     """¿Está encendida la máquina de los modelos? Se pregunta abriendo un socket.
 
     El cerebro de casa es el TITULAR: gratis, privado y sin cupo. Pero darlo por
@@ -582,15 +614,36 @@ def _ollama_vivo(base: str, plazo: float = 0.35) -> bool:
     tres minutos después. Y lanzarle una petición entera para averiguarlo cuesta
     medio segundo de cada turno. Un connect de 0,35 s resuelve las dos cosas:
     cuando está apagado se descarta enseguida, y cuando se enciende se nota en
-    el turno siguiente."""
+    el turno siguiente.
+
+    El plazo es un DEADLINE DURO, y hace falta que lo sea. `create_connection`
+    aplica su timeout al connect, pero antes tiene que resolver el nombre, y
+    `getaddrinfo` NO va cubierto por ese timeout. Con el Mac apagado —o sin
+    WiFi— resolver `Mac-Studio-de-RICARDO.local` por mDNS tarda en fallar:
+    medido, 7,7 s. O sea que esta funcion, que dice costar 0,35 s, congelaba
+    CADA turno casi ocho segundos antes siquiera de empezar a pensar, y encima
+    para acabar yendose a la nube. Por eso se hace en un hilo con join: pasado
+    el plazo se da por muerto y se sigue, resuelva o no."""
     import socket
+    import threading
     from urllib.parse import urlparse
+    if plazo is None:
+        plazo = _plazo_vivo()
     u = urlparse(base if "//" in base else "//" + base)
-    try:
-        with socket.create_connection((u.hostname, u.port or 11434), timeout=plazo):
-            return True
-    except OSError:
-        return False
+    host, puerto = u.hostname, u.port or 11434
+    salida = []
+
+    def _probar():
+        try:
+            with socket.create_connection((host, puerto), timeout=plazo):
+                salida.append(True)
+        except OSError:
+            salida.append(False)
+
+    hilo = threading.Thread(target=_probar, daemon=True)
+    hilo.start()
+    hilo.join(plazo + 0.15)
+    return bool(salida) and salida[0]
 
 
 _ultima_busqueda = 0.0
@@ -674,9 +727,14 @@ class Brain:
                 # contestar: 27 s pensando contra 21 s sin pensar, y encima el
                 # `content` a veces vuelve vacío porque se gastó la salida ahí.
                 clase = "ollama"
+            # Sin keep_alive. BLUE mandaba 8h en cada peticion, y ese campo
+            # PISA la politica del servidor (OLLAMA_KEEP_ALIVE): el Mac no podia
+            # liberar los 52 GB del modelo aunque quisiera, porque cada turno le
+            # volvia a fijar ocho horas. Cuanto se queda cargado lo decide quien
+            # tiene la RAM, que es el servidor, no el cliente.
             b = {"provider": prov, "model": spec.get("model", ""),
                  "kind": clase, "cooldown_until": 0.0, "client": None,
-                 "base": "", "keep_alive": spec.get("keep_alive", "8h")}
+                 "base": ""}
             if b["kind"] == "ollama":
                 base = spec.get("base_url")
                 if not base:
@@ -846,8 +904,14 @@ class Brain:
                         result = fn(**args)
                     except Exception as e:
                         result = f"(error en {c.function.name}: {e})"
+                # Mismo tope que en la via de Ollama. En la nube importa aun
+                # mas: Groq corta a 8.000 tokens por minuto.
+                texto = str(result)
+                if len(texto) > self.MAX_RESULTADO_CHARS:
+                    texto = (texto[:self.MAX_RESULTADO_CHARS] +
+                             f"\n(...cortado: eran {len(texto)} caracteres)")
                 self.messages.append({"role": "tool", "tool_call_id": c.id,
-                                      "content": str(result)})
+                                      "content": texto})
         return LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo"
 
     # ── el cerebro local, por la vía nativa de Ollama ──────────────────────
@@ -918,7 +982,6 @@ class Brain:
                          {"role": "user", "content": "."}],
             "tools": esquemas,
             "stream": False, "think": False,
-            "keep_alive": b["keep_alive"],
             # El mismo num_ctx que las llamadas de verdad: si no coincide,
             # Ollama recarga el modelo y el calentamiento no vale para nada.
             "options": {"temperature": 0, "num_predict": 1,
@@ -929,77 +992,18 @@ class Brain:
             headers={"Content-Type": "application/json"})
         ini = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=300) as r:
-                r.read()
+            with urllib.request.urlopen(req, timeout=ESPERA_OLLAMA_S) as r:
+                d = json.loads(r.read().decode())
         except Exception as e:
             return f"no pude calentar el cerebro de casa: {e}"
-        return f"cerebro de casa caliente en {time.time() - ini:.0f} s"
-
-    def mantener_caliente(self, cada: float = 20.0) -> None:
-        """Vigila el cerebro de casa y lo vuelve a calentar cada vez que haga falta.
-
-        `calentar()` corría UNA vez, al arrancar el daemon, y en un hilo que se
-        tragaba el fallo. Con el Mac Studio eso no basta, porque Wilmer lo apaga:
-
-          - Si al arrancar el portátil el Mac está apagado (o el WiFi todavía no
-            ha levantado), el calentamiento falla, imprime un aviso y no se
-            reintenta NUNCA. El resto del día cada turno paga el prefijo frío.
-          - Y cuando el Mac se apaga y vuelve, la caché de prompt se ha ido con
-            él. Nadie la reconstruye hasta el siguiente arranque del daemon.
-
-        Medido el 31/08/2026 contra jarvis-light: el prefijo son 65 herramientas
-        (26,2 KB) más 7,5 KB de prompt, ~9.600 tokens. En frío cuesta 43,8 s; con
-        la caché caliente, 1,8 s. O sea que este hilo es la diferencia entre un
-        "hola" en dos segundos y uno en cuarenta y cinco.
-
-        No adivina si la caché está fría: mira /api/ps. Si el modelo no está
-        cargado, tampoco está su caché. Y no calienta a media conversación, que
-        sería robarle el Mac a Wilmer justo cuando lo está usando.
-        """
-        b = next((x for x in self.backends if x["kind"] == "ollama"), None)
-        if b is None:
-            return
-
-        import threading
-        import time
-        import urllib.request
-
-        def _cargado() -> bool:
-            try:
-                req = urllib.request.Request(b["base"] + "/api/ps")
-                with urllib.request.urlopen(req, timeout=2.0) as r:
-                    d = json.loads(r.read().decode())
-            except Exception:
-                return False
-            corto = (b["model"] or "").split(":")[0]
-            return any((m.get("name") or "").split(":")[0] == corto
-                       for m in d.get("models", []))
-
-        def _ocupada() -> bool:
-            """¿Blue está en mitad de un turno? Entonces el Mac no es mío."""
-            try:
-                import store
-                return store.get_status() not in ("idle", "", None)
-            except Exception:
-                return False
-
-        def _bucle():
-            caliente = False
-            while True:
-                try:
-                    if not _ollama_vivo(b["base"]):
-                        caliente = False          # se apagó: su caché se fue con él
-                    elif _ocupada():
-                        pass                      # ya está trabajando, no estorbo
-                    elif not caliente or not _cargado():
-                        r = self.calentar()
-                        caliente = r.startswith("cerebro de casa caliente")
-                        print(f"({r})", flush=True)
-                except Exception:
-                    caliente = False
-                time.sleep(cada)
-
-        threading.Thread(target=_bucle, daemon=True).start()
+        # Cuanto tardo Ollama en releer el prefijo. Es el unico dato que dice
+        # de verdad si la cache estaba caliente: con ella estos ~11.400 tokens
+        # se resuelven en 0,8 s; sin ella cuestan 8,9 s (medido con jarvis).
+        ped = d.get("prompt_eval_duration", 0) / 1e9
+        estado = f"estaba FRIA, releidos {d.get('prompt_eval_count', 0)} tok" \
+            if ped > 3.0 else "seguia caliente"
+        return (f"cerebro de casa caliente en {time.time() - ini:.0f} s "
+                f"(prefijo {ped:.1f} s: {estado})")
 
     def _run_ollama(self, backend) -> str:
         """El cerebro de casa. Sin cupo, y con la caché de prompt de Ollama va
@@ -1008,6 +1012,7 @@ class Brain:
         `think: False` es obligatorio: estos modelos razonan antes de contestar
         y, además de tardar más, se gastan la salida en el pensamiento y el
         `content` vuelve vacío."""
+        import time
         import urllib.error
         import urllib.request
 
@@ -1028,13 +1033,40 @@ class Brain:
                 "tools": self._schemas,
                 "stream": False,
                 "think": False,
-                "keep_alive": backend["keep_alive"],
                 "options": {"temperature": 0, "num_ctx": backend["num_ctx"]},
             }).encode()
             req = urllib.request.Request(
                 url, data=cuerpo, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=300) as r:
+            ini = time.time()
+            with urllib.request.urlopen(req, timeout=ESPERA_OLLAMA_S) as r:
                 datos = json.loads(r.read().decode())
+            # Telemetria por ronda. Sin esto la lentitud solo se podia diagnosticar
+            # a ojo: no habia forma de saber si un turno lento se fue en releer el
+            # prefijo (cache fria) o en generar. Ollama ya da los dos numeros
+            # separados; lo unico que faltaba era escribirlos.
+            # load_duration = lo que tardo Ollama en meter el modelo en memoria.
+            # Sin este dato un turno lento dejaba tiempo SIN EXPLICAR: se vio un
+            # turno de 27,4 s cuyo prefijo eran 11,0 s y la generacion 0,4 s, y
+            # los otros 16 s no aparecian en ninguna parte. Ahora que BLUE ya no
+            # fija keep_alive, que el servidor descargue el modelo entre turnos
+            # es normal y hay que poder verlo.
+            _ld = datos.get("load_duration", 0) / 1e9
+            _pe = datos.get("prompt_eval_count", 0)
+            _ped = datos.get("prompt_eval_duration", 0) / 1e9
+            _ev = datos.get("eval_count", 0)
+            _evd = datos.get("eval_duration", 0) / 1e9
+            # La huella del prompt del sistema va en la linea a proposito: si
+            # cambia entre dos turnos, el prefijo entero se invalida y el turno
+            # se va a 30-40 s. Teniendo las dos cosas juntas en el log se ve de
+            # un vistazo si un turno lento fue por eso o por otra cosa.
+            import hashlib as _h
+            _hs = _h.md5((self.messages[0].get("content") or "")
+                         .encode()).hexdigest()[:6]
+            print(f"(turno ollama {time.time() - ini:.1f} s | "
+                  + (f"cargar modelo {_ld:.1f} s | " if _ld > 1 else "") +
+                  f"prefijo {_pe} tok en {_ped:.1f} s "
+                  f"{'FRIO' if _ped > 3 else 'caliente'} | "
+                  f"genera {_ev} tok en {_evd:.1f} s | sys {_hs})", flush=True)
             msg = datos.get("message", {}) or {}
             calls = msg.get("tool_calls") or []
             hist = {"role": "assistant", "content": msg.get("content") or ""}
@@ -1060,8 +1092,12 @@ class Brain:
                         result = fn(**args)
                     except Exception as e:
                         result = f"(error en {nombre}: {e})"
+                texto = str(result)
+                if len(texto) > self.MAX_RESULTADO_CHARS:
+                    texto = (texto[:self.MAX_RESULTADO_CHARS] +
+                             f"\n(...cortado: eran {len(texto)} caracteres)")
                 self.messages.append({"role": "tool", "tool_call_id": f"c{i}",
-                                      "_name": nombre, "content": str(result)})
+                                      "_name": nombre, "content": texto})
         return LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo"
 
     def _run_claude_cli(self, backend) -> str:
@@ -1097,13 +1133,58 @@ class Brain:
         self.messages.append({"role": "assistant", "content": reply})
         return reply
 
+    # Cuanto puede ocupar el historial, en caracteres. La ventana son 32.768
+    # tokens y el prefijo fijo (prompt + 65 herramientas) ya se come ~9.600, asi
+    # que al historial se le dejan unos 10.000 tokens: en espanol, ~4 caracteres
+    # por token, 40.000 caracteres. Sobra sitio para lo que se genera.
+    MAX_HISTORIAL_CHARS = 40_000
+    # Y ningun resultado de herramienta entra entero si es enorme.
+    MAX_RESULTADO_CHARS = 6_000
+
     def _trim_history(self, keep: int = 12):
-        if len(self.messages) <= keep + 1:
-            return
-        head, tail = self.messages[0], self.messages[-keep:]
-        while tail and tail[0].get("role") == "tool":
-            tail = tail[1:]
-        self.messages = [head] + tail
+        """Recorta por NUMERO de mensajes y ademas por TAMANO.
+
+        Contar mensajes no basta y esto era un cuelgue esperando a pasar: un
+        solo `leer_archivo` sobre un fichero de lineas largas (un JSON minificado
+        de 2 MB entra en "200 lineas") mete cientos de miles de caracteres en UN
+        mensaje. Doce mensajes asi desbordan los 32.768 tokens, y Ollama al
+        desbordar TRUNCA POR EL PRINCIPIO: lo primero que se pierde es el prompt
+        del sistema. No da error — BLUE simplemente se vuelve tonta y contesta
+        genericidades. Y de paso se pone LENTA, porque con el prefijo destrozado
+        cada turno vuelve a reprocesarlo entero.
+
+        Por eso ahora se tira del historial hasta que quepa de verdad."""
+        # Se recorta POCO Y A MENUDO, no mucho y de golpe.
+        #
+        # Cada recorte cuesta: el historial va justo detras del prompt y las
+        # herramientas, asi que al mover su principio la secuencia cacheada deja
+        # de encajar y Ollama vuelve a leer. Parece que lo suyo seria recortar
+        # rara vez, y se probo (dejar llegar a 24 mensajes y bajar de golpe a
+        # 12). Salio PEOR, y no por poco: medido sobre 25 turnos seguidos, con
+        # recortes pequenos en cada turno el prefijo nunca pasa de 3,2 s, y con
+        # recortes grandes cada ~9 turnos aparecian dos turnos de 33 s —el
+        # tiron grande obliga a releer el prefijo ENTERO—. Treinta y tres
+        # segundos de golpe es justo lo que se siente como que BLUE se trabo,
+        # asi que se prefiere el goteo constante y barato.
+        if len(self.messages) > keep + 1:
+            head, tail = self.messages[0], self.messages[-keep:]
+            while tail and tail[0].get("role") == "tool":
+                tail = tail[1:]
+            self.messages = [head] + tail
+        # Y ahora por tamano: se sueltan los mas viejos hasta entrar en el
+        # presupuesto. El system (messages[0]) no se toca nunca.
+        def _peso(m):
+            return len(str(m.get("content") or "")) + \
+                len(json.dumps(m.get("tool_calls") or ""))
+        # Y por tamano, tambien con el minimo imprescindible: se suelta lo justo
+        # para entrar en el presupuesto, por la misma razon de arriba.
+        while len(self.messages) > 1 and \
+                sum(_peso(m) for m in self.messages[1:]) > self.MAX_HISTORIAL_CHARS:
+            del self.messages[1]
+            # Un 'tool' sin el 'assistant' que lo pidio es invalido: se va con el.
+            while len(self.messages) > 1 and \
+                    self.messages[1].get("role") == "tool":
+                del self.messages[1]
 
     def think(self, user_text: str) -> str:
         import time
