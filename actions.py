@@ -33,10 +33,46 @@ APP_MAP = {
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
-def _exec_detached(cmd: str, workspace: str | None = None):
-    """Lanza un programa via Hyprland (respeta reglas de ventana)."""
+def _exec_detached(cmd: str, workspace: str | None = None) -> bool:
+    """Lanza un programa. Devuelve si se lanzo DE VERDAD.
+
+    Esto estaba roto entero y en silencio. Se usaba
+    `hyprctl dispatch exec <cmd>`, pero el Hyprland de Wilmer corre la config
+    Lua de Caelestia y ahi ese comando se interpreta como Lua:
+
+        error: [string "return hl.dispatch(exec gnome-calculator)"]:1:
+               ')' expected near 'gnome'
+
+    O sea que NINGUNA app se abria nunca —ni la calculadora, ni el navegador,
+    ni la terminal, ni los archivos, ni una URL—, y como nadie miraba el
+    resultado, BLUE contestaba "Abriendo la calculadora" tan tranquila. Peor
+    que no funcionar es jurar que funciono.
+
+    Tres intentos, del que mejor se porta al que nunca falla:
+      1. hl.dsp.exec_cmd, que es la forma que entiende la config Lua.
+      2. `dispatch exec`, para un Hyprland con hyprland.conf de toda la vida.
+      3. lanzarlo aqui mismo, que funciona hasta sin Hyprland.
+    Los dos primeros respetan las reglas de ventana y el workspace; el tercero
+    no, pero abre la aplicacion, que es lo que se habia pedido."""
     rule = f"[workspace {workspace} silent] " if workspace else ""
-    return _run(["hyprctl", "dispatch", "exec", f"{rule}{cmd}"])
+    entero = f"{rule}{cmd}"
+    lua = entero.replace("\\", "\\\\").replace('"', '\\"')
+    for intento in (["hyprctl", "eval",
+                     f'hl.dispatch(hl.dsp.exec_cmd("{lua}"))'],
+                    ["hyprctl", "dispatch", "exec", entero]):
+        try:
+            r = _run(intento)
+        except OSError:
+            break                     # no hay hyprctl: al plan C
+        salida = (r.stdout or "") + (r.stderr or "")
+        if r.returncode == 0 and "error" not in salida.lower():
+            return True
+    try:
+        subprocess.Popen(shlex.split(cmd), start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 # --------------------------------------------------------------- volumen
@@ -120,12 +156,23 @@ def _screen_to_workspace(screen) -> str | None:
 def open_application(name: str, screen: str = "") -> str:
     import shutil
     key = name.lower().strip()
-    cmd = APP_MAP.get(key, key)        # si no esta mapeada, intenta el nombre tal cual
-    binary = cmd.split()[0]
-    if not shutil.which(binary):
+    # El mapa es una preferencia, no un dogma. Estaba "spotify" ->
+    # "spotify-launcher", que es como lo empaqueta Arch en unas instalaciones y
+    # no en otras: en la de Wilmer el binario es /usr/bin/spotify, asi que el
+    # mapa mandaba a un sitio vacio y BLUE contestaba "No encontré la
+    # aplicación 'spotify' instalada" con Spotify instalado y sonando. Se
+    # prueban las dos, y gana la que exista de verdad.
+    candidatos = [APP_MAP.get(key, key)]
+    if key != candidatos[0]:
+        candidatos.append(key)
+    cmd = next((c for c in candidatos if shutil.which(c.split()[0])), None)
+    if cmd is None:
         return f"No encontré la aplicación '{name}' instalada"
     ws = _screen_to_workspace(screen)
-    _exec_detached(cmd, workspace=ws)
+    # Y se mira si se lanzo. Antes se ignoraba el resultado y se contestaba que
+    # si pasara lo que pasara.
+    if not _exec_detached(cmd, workspace=ws):
+        return f"No pude abrir {name}: falló el lanzamiento"
     if ws:
         return f"Abriendo {name} en la pantalla {screen}"
     return f"Abriendo {name}"

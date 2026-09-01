@@ -521,6 +521,26 @@ def _prompt_base(activos=None) -> str:
                         if not any(b.startswith(h) for h in fuera))
 
 
+def _sin_internos(mensajes):
+    """El historial sin los campos que solo entiende BLUE.
+
+    _run_ollama guarda '_name' en cada resultado de herramienta porque Ollama
+    quiere el nombre y el formato OpenAI no lo lleva ahi (_a_ollama lo convierte
+    en 'tool_name'). Pero el camino OpenAI mandaba self.messages TAL CUAL, y en
+    cuanto el historial arrastraba un resultado de herramienta hecho en el Mac,
+    la nube entera contestaba:
+
+        400 - 'messages.3' : for 'role:tool' ... property '_name' is unsupported
+
+    O sea que bastaba UNA accion ejecutada en casa para dejar todos los relevos
+    a la nube inservibles el resto de la conversacion. Y como el fallo se
+    disfrazaba de "me quede sin cerebros", parecia falta de cupo y no lo era.
+
+    Se filtra al enviar y no al guardar: el campo hace falta para Ollama."""
+    return [{k: v for k, v in m.items() if not k.startswith("_")}
+            for m in mensajes]
+
+
 def _sin_claves(texto: str) -> str:
     """Quita cualquier clave de un texto que va a acabar en el log.
 
@@ -759,7 +779,7 @@ class Brain:
         for attempt in range(2):
             try:
                 resp = backend["client"].chat.completions.create(
-                    model=backend["model"], messages=self.messages,
+                    model=backend["model"], messages=_sin_internos(self.messages),
                     tools=self._schemas, tool_choice="auto", temperature=0)
                 try:
                     import usage
