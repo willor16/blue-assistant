@@ -135,6 +135,7 @@ def record_until_silence(max_seconds: float | None = None,
     calibrar = 0 if umbral_a_mano else int(0.8 * blocks_per_sec)
     fondo: list[float] = []
 
+    motivo = "se acabo el tope"     # si nada lo cambia, salio por max_seconds
     _cancelada.clear()      # una cancelacion vieja no puede matar esta escucha
 
     _silenciar_salida()
@@ -150,6 +151,7 @@ def record_until_silence(max_seconds: float | None = None,
             try:
                 block = q.get(timeout=1.0)
             except queue.Empty:
+                motivo = "el microfono dejo de dar audio"
                 break
             frames.append(block)
             rms = float(np.sqrt(np.mean(block ** 2)))
@@ -204,10 +206,23 @@ def record_until_silence(max_seconds: float | None = None,
             # la ventana entera sigue por encima del umbral, se sube el umbral
             # al ruido que se esta midiendo de verdad y se sigue escuchando.
             # Se corrige solo y no hace falta recalibrar nada a mano.
+            # El disparo NO puede ser "ni un bloque bajo del umbral". Eso solo
+            # pilla el ruido perfectamente constante. Con ruido que fluctua —un
+            # ventilador que sube y baja, musica de fondo, la calle— basta UN
+            # bache aislado en los siete segundos para que min() caiga por
+            # debajo y el rescate no dispare nunca; y como tampoco llegan a
+            # juntarse 1,8 s seguidos de silencio, la grabacion se come los 45 s
+            # enteros. Medido en el log de Wilmer: "grabar 42.3 s, sin audio".
+            #
+            # Se mira la PROPORCION. Hablando de verdad, entre frase y frase y
+            # al respirar, cae por debajo del umbral bastante mas del 15 % de
+            # los bloques de una ventana de siete segundos. Si caen menos, lo
+            # que hay debajo del umbral es el cuarto, no una pausa.
             if speaking and len(nivel) >= rescate_blocks:
                 reciente = nivel[-rescate_blocks:]
-                if min(reciente) > silence_threshold:
-                    subido = float(np.percentile(reciente, 10)) * 1.6
+                bajos = sum(1 for x in reciente if x <= silence_threshold)
+                if bajos < len(reciente) * 0.15:
+                    subido = float(np.percentile(reciente, 20)) * 1.25
                     if subido > silence_threshold:
                         silence_threshold = subido
 
@@ -219,12 +234,23 @@ def record_until_silence(max_seconds: float | None = None,
                 silent_blocks += 1
 
             if not speaking and i > start_blocks:
-                break                      # nunca habló
+                motivo = "nadie hablo"
+                break
             if speaking and silent_blocks > hang_blocks:
-                break                      # terminó de hablar
+                motivo = "silencio"        # terminó de hablar
+                break
 
     finally:
         _restaurar_salida()
+
+    # Por que termino, con los numeros. Sin esto, una escucha que se va a los
+    # 45 s solo deja "sin audio" y no hay forma de saber si fue el ruido del
+    # cuarto, un umbral mal puesto o que el microfono no daba nada.
+    if nivel:
+        print(f"(escucha: {motivo} tras {len(nivel)/blocks_per_sec:.1f} s | "
+              f"umbral final {silence_threshold:.4f} | "
+              f"ruido mediano {float(np.median(nivel)):.4f} | "
+              f"bloques con voz {spoken_blocks})", flush=True)
 
     if not frames or spoken_blocks < 3:
         return np.zeros(0, dtype=np.float32)
@@ -270,13 +296,38 @@ def ptt_stop() -> np.ndarray:
 
 # ------------------------------------------------------------------- STT
 _whisper = None
+_whisper_size = None      # que tamano hay cargado ahora mismo
 
 def _get_whisper(model_size: str = "small"):
-    global _whisper
-    if _whisper is None:
+    """El modelo de Whisper, cacheado POR TAMANO.
+
+    Antes la cache era un solo global y se ignoraba `model_size` a partir de la
+    primera llamada: quien pidiera "base" despues de que alguien hubiera cargado
+    "small" se llevaba "small" sin enterarse. Se veia clarisimo al medirlos —los
+    dos tardaban lo mismo y devolvian exactamente el mismo texto, porque eran el
+    mismo modelo—, y significa que comparar tamanos era imposible y que cambiar
+    `whisper_size` en config.toml podia no surtir efecto."""
+    global _whisper, _whisper_size
+    if _whisper is None or _whisper_size != model_size:
+        import os as _os
         from faster_whisper import WhisperModel
+        # Un hilo por NUCLEO FISICO, no por hilo logico. El i7-7700HQ de Wilmer
+        # son 4 nucleos con hyperthreading (8 logicos), y medido sobre la misma
+        # frase de 3 s: por defecto 3,27 s, con 4 hilos 2,69 s, con 8 3,22 s y
+        # con 12 3,41 s. Pasado el numero de nucleos reales, los hilos se pelean
+        # por la misma ALU y transcribir va A PEOR. Mismo texto en los cuatro
+        # casos: son 0,6 s gratis en cada turno, sin tocar la precision.
+        try:
+            import config as _cfg
+            hilos = int(_cfg.load().get("whisper_hilos", 0))
+        except Exception:
+            hilos = 0
+        if hilos <= 0:
+            hilos = max(1, (_os.cpu_count() or 4) // 2)
         # int8 = rapido y ligero en CPU
-        _whisper = WhisperModel(model_size, device="cpu", compute_type="int8")
+        _whisper = WhisperModel(model_size, device="cpu", compute_type="int8",
+                                cpu_threads=hilos)
+        _whisper_size = model_size
     return _whisper
 
 def transcribe(audio: np.ndarray, model_size: str = "small") -> str:
@@ -432,19 +483,64 @@ def silenciada() -> bool:
 
 _FIN = object()          # centinela: no quedan más frases por sintetizar
 
+# Cuando empezo el speak() actual, para medir el silencio previo a la voz.
+#
+# `hablar` en el log mide la locucion ENTERA, o sea que incluye el audio
+# sonando: una respuesta de 76 tokens da "hablar 20.8 s" y eso no es espera, es
+# que esta hablando. Lo que Wilmer nota como "tarda en empezar a hablar" es otra
+# cosa —el hueco entre que deja de oirse a si mismo y suena la primera silaba—
+# y no se estaba midiendo en ningun sitio.
+_t_habla = None
 
-def _partir_en_frases(texto: str, primera: int = 45, resto: int = 110) -> list:
+
+def _marcar_primer_audio() -> None:
+    """Lo llama quien arranca la reproduccion, la primera vez de cada turno."""
+    global _t_habla
+    if _t_habla is None:
+        return
+    import time as _t
+    print(f"(primera palabra a los {_t.time() - _t_habla:.1f} s de decidir hablar)",
+          flush=True)
+    _t_habla = None
+
+
+def _primer_bocado(frase: str, minimo: int = 25, maximo: int = 70) -> list:
+    """Parte UNA frase larga en (principio, resto) por una junta natural.
+
+    Solo se corta en coma, punto y coma o conjuncion: cortar a mitad de sintagma
+    se oye raro, y aqui lo que se gana no compensa. Si no hay junta en el tramo
+    util, se devuelve la frase entera y no se gana nada, que es lo correcto."""
+    import re
+    for m in re.finditer(r",\s+|;\s+|\s+(?:y|pero|aunque|porque|mientras)\s+",
+                         frase):
+        corte = m.end()
+        if minimo <= corte <= maximo:
+            return [frase[:corte].strip(), frase[corte:].strip()]
+    return [frase]
+
+
+def _partir_en_frases(texto: str, primera: int = 25, resto: int = 110) -> list:
     """Trocea la respuesta en bocados que se puedan sintetizar por separado.
 
     El primero se hace CORTO a propósito: es el que decide cuánto tarda BLUE en
     abrir la boca. Los siguientes se juntan más largos, porque Kokoro entona
     mejor con una frase entera delante y para entonces ya hay audio sonando que
-    tapa la síntesis."""
+    tapa la síntesis.
+
+    Medido el 01/09/2026: Kokoro sintetiza a unas 2,2 veces el tiempo real, o
+    sea que la espera antes de la primera silaba es proporcional a lo que se le
+    manda de golpe. Una frase de 50 caracteres son 2,0 s de silencio. Y como
+    esto solo cortaba en PUNTOS, una respuesta de una sola frase —que es la
+    mayoria de las de BLUE— no se troceaba nunca: se sintetizaba entera y luego
+    sonaba. Por eso `primera` baja de 45 a 25 y por eso una frase larga suelta
+    se parte por su primera coma."""
     import re
     piezas = re.split(r"(?<=[.!?…:])\s+|\n+", texto)
     piezas = [p.strip() for p in piezas if p.strip()]
     if not piezas:
         return []
+    if len(piezas) == 1 and len(piezas[0]) > 60:
+        piezas = _primer_bocado(piezas[0])
     bloques, actual = [], ""
     for p in piezas:
         minimo = primera if not bloques else resto
@@ -514,6 +610,7 @@ def _hablar_por_frases(text: str, voz: str, mi_turno: int) -> bool:
             try:
                 if _callada.is_set() or mi_turno != _turno:
                     continue              # se sigue vaciando la cola para limpiar
+                _marcar_primer_audio()
                 _play_proc = subprocess.Popen(["paplay", item])
                 _play_proc.wait()
                 sono = True
@@ -546,7 +643,9 @@ def _hablar_por_frases(text: str, voz: str, mi_turno: int) -> bool:
 def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
     """Habla 'text'. engine='kokoro' (cálida local) | 'edge' (neural online) | 'piper' (ligero local).
     'voice' es el id correspondiente al motor (ef_dora, es-MX-DaliaNeural, etc)."""
-    global _play_proc
+    global _play_proc, _t_habla
+    import time as _t
+    _t_habla = _t.time()        # arranca la cuenta hasta la primera palabra
 
     # Lo que se dice no es lo que se escribe.
     # 1) estilo: las viñetas se vuelven prosa y se caen los tics de cierre
@@ -605,9 +704,11 @@ def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
         if audio_path.endswith(".mp3"):
             import shutil
             if shutil.which("ffplay"):
+                _marcar_primer_audio()
                 _play_proc = subprocess.Popen(
                     ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_path])
             elif shutil.which("mpv"):
+                _marcar_primer_audio()
                 _play_proc = subprocess.Popen(
                     ["mpv", "--really-quiet", "--no-video", audio_path])
             else:
@@ -615,10 +716,13 @@ def speak(text: str, voice: str = "ef_dora", engine: str = "kokoro"):
                 if shutil.which("ffmpeg"):
                     subprocess.run(["ffmpeg", "-y", "-loglevel", "quiet",
                                     "-i", audio_path, wav_path], check=False)
+                    _marcar_primer_audio()
                     _play_proc = subprocess.Popen(["paplay", wav_path])
                 else:
+                    _marcar_primer_audio()
                     _play_proc = subprocess.Popen(["paplay", audio_path])
         else:
+            _marcar_primer_audio()
             _play_proc = subprocess.Popen(["paplay", audio_path])
         _play_proc.wait()
     except Exception:
