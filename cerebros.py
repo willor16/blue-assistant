@@ -23,11 +23,12 @@ El escalafón, de menos a más pesado:
             editar archivos, correr tests, análisis FEM.
 
 Nota sobre PROMETEO y la "versión light". En el asistente viejo PROMETEO era
-literalmente jarvis-light, porque ahí el modelo local era el que conversaba.
-Aquí el que conversa es el del proveedor en la nube, que es el único con las
-53 herramientas; bajarlo a jarvis-light dejaría a BLUE sin manos. Así que
-PROMETEO conserva su papel — la voz, el que habla contigo — y no su modelo.
-Quien quiera lo contrario cambia `prometeo_motor` en la configuración.
+jarvis-light, un Gemma4 de 31B, y se daba por sentado que el modelo de casa no
+servía para llamar herramientas: por eso conversaba el de la nube. Dejó de ser
+cierto el 01/09/2026. PROMETEO es ahora `jarvis` (Qwen3-Next 80B MoE) en el
+Ollama de casa, medido eligiendo bien las 65 herramientas a 57-60 tokens/s
+contra los 25 del Gemma4, y la nube quedó como respaldo. Quien quiera lo
+contrario cambia `prometeo_motor` en la configuración.
 
 Nada de esto revienta si la otra PC está apagada: `disponibles()` lo comprueba
 de verdad, con un tiempo de espera corto, y lo que no responde se dice.
@@ -416,7 +417,6 @@ def consultar_orfeo(pregunta: str, timeout: float = 240.0) -> str:
         "model": "jarvis-heavy",
         "think": False,
         "stream": False,
-        "keep_alive": "10m",
         "options": {"temperature": 0.4, "num_ctx": 8192},
         "messages": [
             {"role": "system", "content": _ORFEO_GUARD},
@@ -439,18 +439,66 @@ def consultar_orfeo(pregunta: str, timeout: float = 240.0) -> str:
 # ══════════════════════════════════════════════════════════════
 #  Consultar a ÍCARO (Hermes Agent, con su propio perfil)
 # ══════════════════════════════════════════════════════════════
-def consultar_icaro(instruccion: str, timeout: float = 300.0) -> str:
+_ICARO_GUARD = (
+    "Eres ÍCARO, el motor de encargos de BLUE, el asistente de Wilmer, en su PC "
+    "Linux (CachyOS/Hyprland). Haz el ENCARGO que va al final. Reglas:\n"
+    "- Trabaja DENTRO de la carpeta actual: crea y edita ahí, y no te lleves "
+    "nada a otro sitio. Di la ruta de lo que toques.\n"
+    "- NO borres archivos ni instales o desinstales paquetes salvo que el "
+    "encargo lo pida con esas palabras. Si hiciera falta y no te lo pidieron, "
+    "no lo hagas y dilo en la respuesta.\n"
+    "- Al terminar responde en 1 a 3 frases, en español, diciendo qué hiciste. "
+    "Sin markdown, sin listas y sin asteriscos: esto se lee EN VOZ ALTA.\n\n"
+    "ENCARGO: ")
+
+# Igual que ÉREBO: la última carpeta donde trabajó ÍCARO y cuándo.
+_ultimo_icaro = {"cwd": None, "cuando": 0.0}
+ICARO_SEGUIR_MINUTOS = 60
+
+
+def _carpeta_de_trabajo() -> str:
+    """Dónde debe trabajar un motor pesado: el proyecto activo, si lo hay.
+
+    Sin esto, `subprocess.run` heredaba el cwd del daemon, que es
+    /home/wilmer/.local/share/blue — o sea que ÍCARO, que es un agente con
+    herramientas de ficheros, trabajaba DENTRO DEL CODIGO FUENTE DE BLUE. Es la
+    misma carpeta que usa ÉREBO, para que los dos encargos de una misma sesión
+    caigan en el mismo sitio."""
+    try:
+        import workspace
+        aqui = workspace.active_workdir()
+    except Exception:
+        aqui = None
+    return str(aqui or _cfg().get("task_workdir") or Path.home())
+
+
+def consultar_icaro(instruccion: str, timeout: float = 600.0) -> str:
     if not shutil.which("hermes"):
         return "(ÍCARO no está instalado en esta máquina)"
     if not HERMES_PERFIL.exists():
         return ("(ÍCARO no tiene perfil configurado todavía; Hermes está "
                 "instalado pero sin proveedor de inferencia)")
+    import hashlib
+    import time
     entorno = dict(os.environ, HERMES_HOME=str(HERMES_PERFIL))
+    cwd = _carpeta_de_trabajo()
+    # Sesión con nombre, una por carpeta. Hermes retoma una sesión por nombre y,
+    # si no existe, arranca limpia sin protestar (probado). Así el encargo de
+    # seguimiento —"ahora añádele X a lo que acabas de hacer"— sabe de qué habla,
+    # y dos proyectos distintos nunca se mezclan.
+    sesion = ("blue-" + Path(cwd).name[:20] + "-"
+              + hashlib.md5(cwd.encode()).hexdigest()[:6])
+    seguir = (_ultimo_icaro["cwd"] == cwd
+              and time.time() - _ultimo_icaro["cuando"] < ICARO_SEGUIR_MINUTOS * 60)
+    orden = _ICARO_GUARD + (instruccion or "").strip()
+    cmd = ["hermes", "-z", orden, "--cli", "-c", sesion]
     try:
         out = subprocess.run(
-            ["hermes", "-z", (instruccion or "").strip(), "--cli"],
-            capture_output=True, text=True, timeout=timeout, env=entorno,
-            start_new_session=True)
+            cmd, capture_output=True, text=True, timeout=timeout, env=entorno,
+            cwd=cwd, start_new_session=True)
+        _ultimo_icaro["cwd"], _ultimo_icaro["cuando"] = cwd, time.time()
+        print(f"(ÍCARO en {cwd} [sesión {sesion}]"
+              f"{' — sigue la anterior' if seguir else ''})", flush=True)
     except subprocess.TimeoutExpired:
         return "(ÍCARO tardó demasiado y se canceló)"
     except Exception as e:
