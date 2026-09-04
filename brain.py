@@ -13,6 +13,18 @@ import protocols
 
 LAST_ACTIONS: list[str] = []
 
+
+def _dijo_algo(texto: str) -> str:
+    """El texto, o nada si no dice nada.
+
+    Un modelo que acaba de llamar una herramienta a veces cierra el turno con
+    un punto o un guion suelto en vez de contar lo que hizo. Ya habia respaldo
+    para la respuesta VACIA, pero "." no esta vacia: BLUE puso un cronometro de
+    veinte minutos de verdad y lo que se oyo por el altavoz fue "punto".
+    """
+    t = (texto or "").strip()
+    return "" if all(not c.isalnum() for c in t) else t
+
 def _log(result: str):
     LAST_ACTIONS.append(result)
     return result
@@ -889,7 +901,7 @@ class Brain:
                         destino["extra_content"] = extra
             self.messages.append(hist)
             if not calls:
-                return (msg.content or "").strip() or \
+                return _dijo_algo(msg.content) or \
                     (LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo")
             for c in calls:
                 fn = self._fns.get(c.function.name)
@@ -1079,7 +1091,7 @@ class Brain:
                     for i, c in enumerate(calls)]
             self.messages.append(hist)
             if not calls:
-                return (msg.get("content") or "").strip() or \
+                return _dijo_algo(msg.get("content")) or \
                     (LAST_ACTIONS[-1] if LAST_ACTIONS else "Listo")
             for i, c in enumerate(calls):
                 nombre = c["function"]["name"]

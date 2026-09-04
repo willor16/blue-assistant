@@ -178,20 +178,60 @@ def _info_route(t: str) -> str | None:
     return None
 
 
+def _close_target(t: str) -> str | None:
+    """¿A que app se refiere "cierra X"? Solo si la reconoce de verdad.
+
+    Conservador a proposito: o es un nombre que BLUE sabe traducir, o hay una
+    ventana abierta que encaja. Si no, devuelve None y que piense el cerebro,
+    porque cerrar lo que no era es de las pocas cosas que no se pueden deshacer.
+    """
+    conocidos = set(actions._WIN_ALIASES) | set(actions.APP_MAP)
+    # los nombres largos primero: "gestor de archivos" antes que "archivos"
+    for nombre in sorted(conocidos, key=len, reverse=True):
+        if re.search(r"\b" + re.escape(nombre) + r"\b", t):
+            return nombre
+    # no esta en la lista: ¿hay alguna ventana abierta que se llame asi?
+    for palabra in re.findall(r"[a-záéíóúñ]{4,}", t):
+        if palabra in _NO_ES_APP:
+            continue
+        if actions._find_client(palabra):
+            return palabra
+    return None
+
+
+# Palabras que salen en cualquier orden de cerrar y no son el nombre de nada.
+_NO_ES_APP = {
+    "cierra", "cierras", "cierre", "cierres", "cierren", "cierralo", "cierrala",
+    "cerrar", "cierrame", "quiero", "puedes", "favor", "ahora", "todas", "todos",
+    "ventana", "ventanas", "abierta", "abiertas", "abierto", "abiertos", "tengo",
+    "esta", "este", "esto", "programa", "aplicacion", "app", "porfa", "please",
+}
+
+
 def _window_route(t: str) -> str | None:
     """Ventanas: listar / cerrar todo / cerrar la activa. Directo, 0 tokens.
 
     Determinista a propósito: cerrar ventanas es una orden que Blue DEBE cumplir
     siempre igual, sin depender de que el modelo chico decida llamar la función.
     """
-    cerrar = bool(re.search(r"\b(cierra\w*|ci[eé]rra\w*|cerrar|ci[eé]rralo|ci[eé]rrame)\b", t))
-    # --- cerrar gana siempre que se diga "cierra/cerrar" (intención clara) ---
-    if cerrar:
+    # Todas las formas del verbo, no solo el imperativo. La lista vieja pedia
+    # "cierra/cerrar" literal y se le escapaba el subjuntivo, que es justo como
+    # se habla: "quiero que CIERRES todo lo que tengo abierto" no encajaba, caia
+    # en la rama de LISTAR de mas abajo, y BLUE contestaba tan campante "tienes
+    # tres ventanas abiertas" a alguien que le habia pedido cerrarlas. Un solo
+    # patron cubre cierra, cierres, cierre, cierren, ciérralo, ciérrame y cerrar.
+    cerrar = bool(re.search(r"\bc[ieé]+rr\w*", t))
+    # "cierra sesión" es apagar, no una ventana: que lo vea el cerebro.
+    if cerrar and not re.search(r"\bsesi[oó]n\b", t):
         # cerrar TODO (cierra todo / ciérralo todo / cierra todas las ventanas)
         if re.search(r"\b(todo|todas?|todito)\b", t):
             return lines.flavor(actions.close_all_windows())
-        # cerrar la ventana actual (cierra esta/la ventana)
-        if re.search(r"\bventana\b", t):
+        # cerrar una app por su nombre: "cierra Spotify", "ciérrame el navegador"
+        app = _close_target(t)
+        if app:
+            return lines.flavor(actions.close_application(app))
+        # cerrar la ventana actual (cierra esta/la ventana, ciérrala)
+        if re.search(r"\bventana\b|\bc[ieé]+rra(la|lo)\b", t):
             return lines.flavor(actions.close_active_window())
         return None
     # --- listar ventanas abiertas (solo si NO se pidió cerrar) ---
@@ -378,6 +418,40 @@ def _player_in(t: str):
         if p in t:
             return "brave" if p in ("chrome", "youtube") else p
     return None
+
+
+# ── ¿esto son MANOS o es cabeza? ───────────────────────────────────────────
+# Dentro de un modo (ORFEO o ICARO) todo lo que se dice va a ese motor, y eso
+# esta bien para pensar pero es absurdo para actuar: ORFEO no tiene manos. El
+# 01/09/2026 Wilmer, con ORFEO puesto, pidio "cierra Spotify" y le contesto un
+# modelo suelto explicandole que pulsara Alt+F4 y que en el movil deslizara la
+# app hacia arriba. Ni Spotify se cerro ni BLUE se entero.
+#
+# fast_route ya salva volumen, musica y ventanas. Lo que queda —abrir apps,
+# temporizadores, apagar, correo— necesita las herramientas de PROMETEO. Esto
+# distingue una cosa de la otra: un verbo de mandar Y un objeto que solo esta
+# maquina tiene. Las dos condiciones a la vez, para no robarle a ICARO su
+# encargo ("crea un archivo" no lleva ningun objeto de esta lista).
+_ORDEN_VERBO = re.compile(
+    r"\b(abre|abre\w+|abrir|abreme|[aá]breme|pon|ponme|ponle|poner|quita|"
+    r"c[ieé]+rr\w*|cerrar|sube|s[uú]be\w*|baja|b[aá]ja\w*|silencia|"
+    r"reproduce|pausa|p[aá]usa\w*|det[eé]n|salta|adelanta|apaga|ap[aá]ga\w*|"
+    r"reinicia|suspende|bloquea|captura|capt[uú]r\w*|enfoca|mueve|maximiza|"
+    r"minimiza|manda|env[ií]a|recu[eé]rdame|av[ií]same|despi[eé]rtame|"
+    r"programa|activa|dime|revisa|checa|mira)\b", re.IGNORECASE)
+_ORDEN_OBJETO = re.compile(
+    r"\b(volumen|m[uú]sica|canci[oó]n|spotify|reproductor|sonido|audio|"
+    r"ventana\w*|pantalla|brillo|pantallazo|escritorio|navegador|chrome|"
+    r"brave|firefox|terminal|consola|calculadora|archivos|explorador|"
+    r"temporizador|cron[oó]metro|alarma|recordatorio|pomodoro|computadora|"
+    r"equipo|sesi[oó]n|wifi|bluetooth|portapapeles|correo|agenda|bater[ií]a|"
+    r"hora|clima|pc)\b", re.IGNORECASE)
+
+
+def es_orden_de_manos(text: str) -> bool:
+    """¿Esto se lo tiene que hacer PROMETEO al escritorio, no pensarlo un motor?"""
+    t = (text or "").lower()
+    return bool(_ORDEN_VERBO.search(t) and _ORDEN_OBJETO.search(t))
 
 
 def fast_route(text: str) -> str | None:

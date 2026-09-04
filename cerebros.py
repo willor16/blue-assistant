@@ -224,18 +224,51 @@ _ALIAS = {
 # mandara al motor de turno, habria que esperar a que acabase su encargo —que
 # pueden ser dos minutos— solo para poder salir. El freno tiene que estar del
 # lado de Wilmer, no del lado de lo que se atasco.
+# Un cambio de mando se pide de mil maneras y en voz salen todas. Wilmer dijo
+# "cambia a Orfeo" para entrar y luego "¿puedes cambiar a Prometeo?" y "quiero
+# utilizar en este momento a Prometeo" para salir; ninguna de las dos ultimas
+# estaba contemplada, asi que se quedo encerrado en ORFEO contestandole el
+# motor equivocado hasta que se rindio. Entrar y salir son la MISMA frase con
+# distinto nombre al final, asi que se reconocen con el mismo patron.
+_VERBO_MANDO = (
+    r"(?:cambia\w*|cambiate|vuelve\w*|regresa\w*|ponme\s+con|pasame\s+(?:a|con)|"
+    r"dame\s+a|quiero|necesito|prefiero|puedes|podrias|usa\w*|utiliza\w*|"
+    r"activa\w*|llama\s+a|conectame\s+con|"
+    r"que\s+(?:me\s+)?(?:responda|conteste|siga|hable|atienda))"
+)
+
+# "que se ponga X" / "es tu turno": la otra forma, con el nombre por delante.
+_TOMA_EL_MANDO = (r"(?:es\s+tu\s+turno(?:[\s,:.\-—]+hazte\s+cargo)?|hazte\s+cargo|"
+                  r"toma\s+el\s+control|encargate(?:\s+tu)?)")
+
+
+def _pide_motor(alias: str) -> re.Pattern:
+    """Frases que piden que mande ESE motor, por delante o por detras."""
+    return re.compile(
+        # "Orfeo, es tu turno" / "Prometeo, hazte cargo"
+        r"^\s*(?:" + alias + r")\b[\s,:.\-—]*" + _TOMA_EL_MANDO + r"\b|"
+        # "cambia a Orfeo", "quiero utilizar en este momento a Prometeo"
+        + _VERBO_MANDO + r"\b[^.?!]{0,45}?\b(?:" + alias + r")\b|"
+        # el nombre a secas, dicho solo: "Prometeo." / "Orfeo"
+        r"^\s*(?:" + alias + r")\s*$",
+        re.IGNORECASE)
+
+
+# Esta preguntando POR el motor, no pidiendolo. "Quiero saber quien fue Prometeo"
+# lleva "quiero" y lleva el nombre, y sin esta guarda saldria del modo.
+_PREGUNTA_POR = re.compile(
+    r"\b(?:saber|quien\s+(?:es|fue|era)|que\s+(?:es|fue|era|significa|hace)|"
+    r"explica\w*|explicame|cuenta\w*|cuentame|historia|mito|leyenda|"
+    r"diferencia|comparar?|hablame\s+de)\b", re.IGNORECASE)
+
 _ENTRAR_MODO = {
-    "ICARO": re.compile(
-        r"^\s*(?:" + _ALIAS["ICARO"] + r")\b[\s,:.\-—]*"
-        r"(?:es\s+tu\s+turno(?:[\s,:.\-—]+hazte\s+cargo)?|hazte\s+cargo|"
-        r"toma\s+el\s+control|encargate(?:\s+tu)?)\b", re.IGNORECASE),
-    "ORFEO": re.compile(
-        r"^\s*(?:" + _ALIAS["ORFEO"] + r")\b[\s,:.\-—]*"
-        r"(?:es\s+tu\s+turno(?:[\s,:.\-—]+hazte\s+cargo)?|hazte\s+cargo|"
-        r"toma\s+el\s+control|encargate(?:\s+tu)?)\b|"
-        r"^\s*cambia(?:\s+de\s+cerebro)?\s+a\s+(?:" + _ALIAS["ORFEO"] + r")\b",
-        re.IGNORECASE),
+    "ICARO": _pide_motor(_ALIAS["ICARO"]),
+    "ORFEO": _pide_motor(_ALIAS["ORFEO"]),
 }
+
+# Volver a PROMETEO es salir del modo, se diga como se diga. Es la mitad que
+# faltaba: se podia entrar pero no salir por la puerta de al lado.
+_VOLVER_PROMETEO = _pide_motor(_ALIAS["PROMETEO"] + r"|blue")
 
 # La salida vale para cualquier modo: no hay que acertar el nombre del que esta
 # puesto. Y "para" a secas NO sale del modo, solo calla: son cosas distintas.
@@ -250,6 +283,8 @@ _SALIR_MODO = re.compile(
 def modo_pedido(texto: str):
     """¿Esta frase pide ENTRAR en un modo? Devuelve el nombre o None."""
     plano = _sin_tildes((texto or "").strip()).lower()
+    if _PREGUNTA_POR.search(plano):
+        return None
     for nombre, rx in _ENTRAR_MODO.items():
         if rx.search(plano):
             return nombre
@@ -257,9 +292,17 @@ def modo_pedido(texto: str):
 
 
 def pide_salir_del_modo(texto: str) -> bool:
-    """¿Esta frase pide VOLVER a la normalidad?"""
+    """¿Esta frase pide VOLVER a la normalidad?
+
+    Dos caminos: despedir al que esta ("terminamos") o llamar a PROMETEO
+    ("cambia a Prometeo"). El segundo es el que faltaba, y es el natural: quien
+    quiere a otro no piensa en despedir al de ahora.
+    """
     plano = _sin_tildes((texto or "").strip()).lower()
-    return bool(_SALIR_MODO.search(plano))
+    if _SALIR_MODO.search(plano):
+        return True
+    return bool(_VOLVER_PROMETEO.search(plano)
+                and not _PREGUNTA_POR.search(plano))
 
 
 # Se dirige a uno de dos maneras. O lo llama por delante ("Orfeo, explícame…"),
@@ -271,7 +314,7 @@ _DELEGA = (r"(?:preg[uú]ntale\s+a|preg[uú]ntaselo\s+a|p[aá]saselo\s+a|"
            r"mand[aá](?:selo)?\s+a|encarg\w*\s+(?:esto\s+)?a|delega\w*\s+en|"
            r"que\s+(?:lo|la|esto)\s+(?:vea|haga|hagas|resuelva|programe|escriba)|"
            r"que\s+se\s+encargue(?:\s+de)?|a\s+cargo\s+de|tira\s+de|"
-           r"(?:us(?:a|ame|ando)|utiliza(?:ndo)?|ocupa(?:ndo)?)\s*"
+           r"(?:vamos\s+a\s+|voy\s+a\s+|quiero\s+)?"r"(?:us(?:a|ar|ame|ando)|utiliza(?:r|ndo)?|ocupa(?:r|ndo)?)\s*"
            r"(?:a\s+|al\s+|el\s+cerebro\s+de\s+|la\s+de\s+)?|"
            r"con\s+(?:el\s+cerebro\s+de\s+)?|el\s+cerebro\s+de\s+|llama\s+a)\s*")
 

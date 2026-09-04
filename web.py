@@ -513,13 +513,16 @@ def create_app(assistant):
 
 
 def _close_window_class(cls: str):
+    """Cierra las ventanas de una clase. Por `actions`, que sabe como hablarle
+    a la config Lua de esta maquina: `dispatch closewindow` no funciona aqui."""
     import json
     out = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True)
     try:
+        import actions
         for c in json.loads(out.stdout):
             if c.get("class") == cls and c.get("address"):
-                subprocess.run(["hyprctl", "dispatch", "closewindow",
-                                f"address:{c['address']}"], check=False)
+                actions._dispatch(actions._cerrar_lua(c["address"]),
+                                  "closewindow", f"address:{c['address']}")
     except Exception:
         pass
 

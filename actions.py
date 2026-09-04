@@ -12,14 +12,40 @@ import subprocess
 import urllib.parse
 from pathlib import Path
 
-TERMINAL = "foot"
-BROWSER = "google-chrome-stable"
-
-
 def _primero_instalado(*candidatos: str) -> str:
     """El primero de la lista que exista de verdad en esta maquina."""
     import shutil
     return next((c for c in candidatos if shutil.which(c)), "")
+
+
+def _navegador_del_sistema() -> str:
+    """El navegador que Wilmer usa de verdad, preguntandoselo al sistema.
+
+    Estaba escrito `google-chrome-stable` a pelo y en esta maquina NO ESTA
+    INSTALADO: hay brave y firefox. O sea que "abre el navegador" no abria
+    nada. Es el mismo agujero de `nautilus` que ya se tapo para los archivos,
+    solo que en el navegador nadie lo miro.
+
+    Se pregunta primero por el predeterminado (aqui contesta brave-browser) y
+    si eso falla se coge el primero instalado.
+    """
+    try:
+        d = subprocess.run(["xdg-settings", "get", "default-web-browser"],
+                           capture_output=True, text=True, timeout=3)
+        nombre = (d.stdout or "").strip().removesuffix(".desktop")
+        # brave-browser.desktop -> el binario se llama `brave`
+        for cand in (nombre, nombre.split("-")[0]):
+            if cand and _primero_instalado(cand):
+                return cand
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return _primero_instalado("brave", "google-chrome-stable", "google-chrome",
+                              "chromium", "firefox") or "xdg-open"
+
+
+TERMINAL = _primero_instalado("foot", "kitty", "alacritty", "wezterm",
+                              "ghostty", "konsole", "gnome-terminal") or "foot"
+BROWSER = _navegador_del_sistema()
 
 
 # El gestor de archivos NO se puede dar por sentado. Estaba escrito "nautilus"
@@ -54,6 +80,62 @@ APP_MAP = {
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _lua(s: str) -> str:
+    """Un texto metido dentro de una cadena Lua sin que reviente la sintaxis."""
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _cerrar_lua(addr: str) -> str:
+    """Cerrar UNA ventana concreta, y que sea esa.
+
+    El selector va en tabla —`close({ window = "address:0x..." })`— y no como
+    cadena suelta. La cadena tambien devuelve "ok", pero Hyprland la ignora y
+    cierra LA VENTANA ENFOCADA. Probado con dos ventanas de prueba: pidiendo
+    cerrar la segunda por cadena, seguia viva y la que se iba era la de al
+    lado. Un "ok" que cierra otra cosa es peor que un error.
+    """
+    return f'hl.dsp.window.close({{ window = "address:{_lua(addr)}" }})'
+
+
+def _dispatch(lua: str, *respaldo: str) -> bool:
+    """Manda un dispatcher a Hyprland hablando el idioma de ESTA maquina.
+
+    `hyprctl dispatch <verbo> <args>` esta roto AQUI, y no solo para `exec`
+    como se creia: la config de Wilmer es la Lua de Caelestia, asi que hyprctl
+    envuelve lo que le des en `return hl.dispatch(...)` y eso deja de ser Lua
+    valido en cuanto el dispatcher lleva argumentos:
+
+        error: [string "return hl.dispatch(closewindow address:0x55...)"]:1:
+               ')' expected near 'address'
+
+    O sea que CERRAR, ENFOCAR, MOVER y pantalla completa no funcionaban
+    NINGUNA: BLUE contestaba "Ventana cerrada" con la ventana ahi delante.
+    Es el mismo agujero que ya tapo `_exec_detached` para abrir apps, pero
+    nadie lo llevo al resto.
+
+    La forma que si entiende es `hyprctl eval` con la llamada Lua ya escrita
+    (`hl.dispatch(hl.dsp.focus({ workspace = "empty" }))`), y esa va primero.
+    El `dispatch` de toda la vida queda de respaldo para una maquina con
+    hyprland.conf normal, donde el `eval` no existiria. Ojo con los selectores:
+    van en tabla, no como cadena suelta; ver _cerrar_lua.
+
+    Devuelve si de verdad se acepto, para no volver a jurar en vano.
+    """
+    intentos = [["hyprctl", "eval", f"hl.dispatch({lua})"]]
+    if respaldo:
+        intentos.append(["hyprctl", "dispatch", *respaldo])
+    for cmd in intentos:
+        try:
+            r = _run(cmd)
+        except OSError:
+            return False              # no hay hyprctl: no hay nada que hacer
+        salida = ((r.stdout or "") + (r.stderr or "")).lower()
+        if r.returncode == 0 and "error" not in salida:
+            return True
+    return False
+
 
 def _exec_detached(cmd: str, workspace: str | None = None) -> bool:
     """Lanza un programa. Devuelve si se lanzo DE VERDAD.
@@ -275,7 +357,7 @@ def open_in_new_workspace(name: str) -> str:
     """Abre la app en un escritorio (workspace) vacio y cambia a el."""
     key = name.lower().strip()
     cmd = APP_MAP.get(key, key)
-    _run(["hyprctl", "dispatch", "workspace", "empty"])
+    _dispatch('hl.dsp.focus({ workspace = "empty" })', "workspace", "empty")
     _exec_detached(cmd)
     return f"Abriendo {name} en un escritorio nuevo"
 
@@ -378,6 +460,15 @@ _TERMINALS = ["kitty", "foot", "alacritty", "wezterm", "ghostty", "konsole",
               "gnome-terminal"]
 
 def close_application(name: str) -> str:
+    """Cierra una app por su nombre hablado: "cierra Spotify".
+
+    Va por la VENTANA primero y por `pkill` solo si no hay ninguna. Antes era
+    `pkill -f <lo que abre la app>` a secas y eso fallaba justo en el caso mas
+    pedido: Spotify se lanza con `spotify-launcher`, pero el proceso que queda
+    corriendo se llama `spotify`, asi que el pkill no encontraba nada y BLUE
+    contestaba "Cerrando Spotify" con Spotify sonando. Cerrar la ventana ademas
+    es lo educado: la app guarda lo suyo y se va, en vez de morir de golpe.
+    """
     key = name.lower().strip()
     # "terminal/consola" es ambiguo: cierra el emulador que realmente corre
     if key in ("terminal", "consola"):
@@ -388,31 +479,88 @@ def close_application(name: str) -> str:
         for t in running:
             _run(["pkill", "-x", t])
         return f"Cerrando {', '.join(running)}"
+
+    ventanas = _clients_de(key)
+    if ventanas:
+        for c in ventanas:
+            _dispatch(_cerrar_lua(c["address"]),
+                      "closewindow", f"address:{c['address']}")
+        quedan = _esperar_cierre({c["address"] for c in ventanas})
+        if not quedan:
+            return f"Cerré {name}"
+        return f"{name} no se deja cerrar, Wilmer: te está pidiendo algo"
+
+    # Sin ventana: o no esta abierta, o corre sin ventana propia. Se intenta el
+    # proceso, y se comprueba, que es lo que faltaba.
     target = APP_MAP.get(key, key)
     proc = Path(target).name
-    _run(["pkill", "-f", proc])
-    return f"Cerrando {name}"
+    candidatos = {proc, key}
+    if proc.endswith("-launcher"):
+        candidatos.add(proc[:-len("-launcher")])   # spotify-launcher -> spotify
+    vivos = [c for c in candidatos if _run(["pgrep", "-x", c]).returncode == 0]
+    if not vivos:
+        return f"No veo {name} abierto, Wilmer"
+    for c in vivos:
+        _run(["pkill", "-x", c])
+    return f"Cerré {name}"
+
+
+def _clients_de(key: str) -> list:
+    """Todas las ventanas abiertas de una app, por su nombre hablado."""
+    frag = _WIN_ALIASES.get(key, key)
+    fuera = []
+    for c in _clients():
+        if not c.get("address") or c.get("hidden"):
+            continue
+        cls = (c.get("class") or c.get("initialClass") or "").lower()
+        if frag and frag in cls:
+            fuera.append(c)
+    return fuera
 
 def close_active_window() -> str:
     "Cierra la ventana actualmente enfocada."
-    _run(["hyprctl", "dispatch", "killactive"])
+    if not _dispatch("hl.dsp.window.close()", "killactive"):
+        return "No pude cerrar la ventana, Wilmer"
     return "Ventana cerrada"
 
 def close_all_windows() -> str:
-    "Cierra TODAS las ventanas abiertas (el asistente sigue corriendo de fondo)."
-    import json
-    out = _run(["hyprctl", "clients", "-j"])
-    try:
-        clients = json.loads(out.stdout)
-    except Exception:
-        clients = []
-    n = 0
-    for c in clients:
-        addr = c.get("address")
-        if addr:
-            _run(["hyprctl", "dispatch", "closewindow", f"address:{addr}"])
-            n += 1
-    return f"Cerrando {n} ventanas"
+    """Cierra TODAS las ventanas abiertas (el asistente sigue de fondo).
+
+    Y COMPRUEBA que se cerraron. Antes contaba cuantas peticiones habia mandado
+    y decia "Cerrando 3 ventanas" aunque no se cerrara ninguna —que era el caso
+    siempre, porque iba por `dispatch closewindow`—. Una ventana tambien puede
+    quedarse abierta por su cuenta (un editor preguntando si guardas), y eso hay
+    que decirlo en vez de dar el parte de una victoria que no hubo.
+    """
+    antes = [c for c in _clients() if c.get("address")]
+    if not antes:
+        return "No tienes ninguna ventana abierta, Wilmer"
+    for c in antes:
+        _dispatch(_cerrar_lua(c["address"]),
+                  "closewindow", f"address:{c['address']}")
+    # Cerrar no es instantaneo: la app recibe el aviso y se va cuando puede.
+    quedan = _esperar_cierre({c["address"] for c in antes})
+    n = len(antes) - len(quedan)
+    if not quedan:
+        return f"Listo, cerré {n} {'ventana' if n == 1 else 'ventanas'}"
+    if n == 0:
+        return "No se dejaron cerrar, Wilmer. Están pidiendo algo en pantalla"
+    resisten = ", ".join(sorted({_nice_window_name(c.get("class") or "")
+                                 for c in _clients()
+                                 if c.get("address") in quedan}))
+    return (f"Cerré {n}, pero {resisten} sigue ahí: te está pidiendo algo")
+
+
+def _esperar_cierre(direcciones: set, plazo: float = 2.5) -> set:
+    """Las que SIGUEN abiertas pasado el plazo. Sondea, no duerme a ciegas."""
+    import time
+    fin = time.time() + plazo
+    quedan = set(direcciones)
+    while quedan and time.time() < fin:
+        time.sleep(0.15)
+        vivas = {c.get("address") for c in _clients()}
+        quedan &= vivas
+    return quedan
 
 # nombre técnico de ventana (clase) -> nombre hablado bonito
 _NICE_NAMES = {
@@ -468,7 +616,10 @@ def list_windows() -> str:
 # ------------------------------------------------- enfocar / mover ventanas
 # nombre hablado -> fragmento que aparece en la CLASS de la ventana
 _WIN_ALIASES = {
-    "navegador": "chrome", "chrome": "chrome", "google chrome": "chrome",
+    # "navegador" apunta al que de verdad esta puesto: buscar "chrome" en las
+    # clases de ventana no encontraba nunca el Brave de Wilmer.
+    "navegador": BROWSER.split("-")[0] or "chrome",
+    "chrome": "chrome", "google chrome": "chrome",
     "brave": "brave",
     "firefox": "firefox",
     "código": "code", "codigo": "code", "code": "code", "vscode": "code",
@@ -514,7 +665,9 @@ def focus_window(name: str) -> str:
     addr = c.get("address")
     if not addr:
         return f"No pude ubicar la ventana de {name}"
-    _run(["hyprctl", "dispatch", "focuswindow", f"address:{addr}"])
+    if not _dispatch(f'hl.dsp.focus({{ window = "address:{_lua(addr)}" }})',
+                     "focuswindow", f"address:{addr}"):
+        return f"No pude traer la ventana de {name}, Wilmer"
     return f"Ahí tienes {_nice_window_name(c.get('class') or '')}, Wilmer"
 
 def move_window(where: str) -> str:
@@ -523,17 +676,23 @@ def move_window(where: str) -> str:
     w = (where or "").lower().strip()
     ws = _screen_to_workspace(w)
     if ws:
-        _run(["hyprctl", "dispatch", "movetoworkspace", ws])
+        if not _dispatch(f'hl.dsp.window.move({{ workspace = "{_lua(ws)}" }})',
+                         "movetoworkspace", ws):
+            return "No pude mover la ventana, Wilmer"
         return f"Ventana movida a la pantalla {where}"
     if w in ("completa", "pantalla completa", "fullscreen", "maximizar",
              "maximiza", "máximo", "maximo"):
-        _run(["hyprctl", "dispatch", "fullscreen", "1"])
+        if not _dispatch('hl.dsp.window.fullscreen({ mode = "maximized" })',
+                         "fullscreen", "1"):
+            return "No pude ponerla a pantalla completa, Wilmer"
         return "Ventana a pantalla completa"
     if w in ("flotante", "flota", "flotar", "floating"):
-        _run(["hyprctl", "dispatch", "togglefloating"])
+        if not _dispatch("hl.dsp.window.float()", "togglefloating"):
+            return "No pude cambiar el modo flotante, Wilmer"
         return "Listo, alterné el modo flotante"
     if w in ("centrar", "centra", "centrada", "centro", "center"):
-        _run(["hyprctl", "dispatch", "centerwindow"])
+        if not _dispatch("hl.dsp.window.center()", "centerwindow"):
+            return "No pude centrarla, Wilmer"
         return "Ventana centrada"
     return f"No entendí a dónde mover la ventana ('{where}'), Wilmer"
 
@@ -641,6 +800,11 @@ def take_screenshot(region: bool = False) -> str:
     return f"Captura guardada en {path}"
 
 
+# Salir de la sesion. Se arma aqui y no en linea porque power_action lo mete en
+# un `bash -c` con retraso, y hay que citarlo entero.
+_SALIR_SESION = ["hyprctl", "eval", "hl.dispatch(hl.dsp.exit())"]
+
+
 def power_action(action: str = "poweroff") -> str:
     "Apaga/reinicia/suspende el equipo o cierra sesión."
     m = {
@@ -650,12 +814,13 @@ def power_action(action: str = "poweroff") -> str:
         "reiniciar":(["systemctl", "reboot"], "Reiniciando"),
         "suspend":  (["systemctl", "suspend"], "Suspendiendo"),
         "suspender":(["systemctl", "suspend"], "Suspendiendo"),
-        "logout":   (["hyprctl", "dispatch", "exit"], "Cerrando sesión"),
-        "cerrar sesion": (["hyprctl", "dispatch", "exit"], "Cerrando sesión"),
+        # Cerrar sesion va por `eval` como todo lo demas: ver _dispatch.
+        "logout":   (_SALIR_SESION, "Cerrando sesión"),
+        "cerrar sesion": (_SALIR_SESION, "Cerrando sesión"),
     }
     cmd, msg = m.get(action.lower().strip(), m["poweroff"])
     # retraso para que Blue alcance a narrar/confirmar por voz antes de apagar
-    subprocess.Popen(["bash", "-c", f"sleep 15; {' '.join(cmd)}"],
+    subprocess.Popen(["bash", "-c", f"sleep 15; {shlex.join(cmd)}"],
                      start_new_session=True)
     return msg
 

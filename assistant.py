@@ -21,6 +21,7 @@ class Assistant:
         self._pending_task = None          # tarea esperando un 'sí' (borrar/instalar)
         self._modo = None                  # None | "ICARO" | "ORFEO" (ver _modo_intercepta)
         self._modo_hechos = []             # lo pedido y lo respondido dentro del modo
+        self._modo_historial = []          # la conversación tal cual, para ORFEO
         # narrador en vivo de protocolos: habla cada paso al ejecutarlo (sin tokens)
         try:
             import protocols
@@ -281,6 +282,7 @@ class Assistant:
     def _entrar_en_modo(self, nombre: str) -> str:
         self._modo = nombre
         self._modo_hechos = []
+        self._modo_historial = []
         print(f"(modo {nombre} ACTIVADO)", flush=True)
         if nombre == "ICARO":
             return ("Me hago cargo, Wilmer. A partir de ahora hablas conmigo, "
@@ -291,9 +293,14 @@ class Assistant:
 
     def _salir_del_modo(self) -> str:
         anterior, self._modo = self._modo, None
+        self._modo_historial = []
         print(f"(modo {anterior} CERRADO)", flush=True)
-        if anterior != "ICARO":
-            return "Listo, Wilmer. Vuelvo a ser yo, PROMETEO."
+        # Vale para los DOS modos. Antes ORFEO salia por aqui con un "vuelvo a
+        # ser yo" y se perdia todo lo hablado: Wilmer podia estar veinte minutos
+        # razonando algo con ORFEO, volver, preguntar "¿y lo que dijimos?" y
+        # encontrarse a PROMETEO en blanco. Lo que se hablo con un motor es
+        # suyo, pero tambien es de la conversacion.
+        quien = "ÍCARO" if anterior == "ICARO" else "ORFEO"
         # PROMETEO no se ha enterado de NADA de lo que paso en el modo: su
         # historial se quedo congelado donde lo dejamos. Sin esto, Wilmer sale,
         # pregunta "¿que hicimos?" y se encuentra un cerebro en blanco.
@@ -310,7 +317,7 @@ class Assistant:
             if hechos:
                 lineas = "; ".join(f"le pediste «{p}» y respondió: {r}"
                                    for p, r in hechos[-6:])
-                resumen = ("Mientras ÍCARO estuvo al mando, " + lineas)
+                resumen = (f"Mientras {quien} estuvo al mando, " + lineas)
                 # El resumen se mete como CONTEXTO, y la conversación se cierra
                 # con un asentimiento soso.
                 #
@@ -326,17 +333,22 @@ class Assistant:
                 b.messages.append({
                     "role": "user",
                     "content": ("(Contexto, no es una orden ni una pregunta: "
-                                "mientras ÍCARO estuvo al mando hizo esto. "
+                                f"mientras {quien} estuvo al mando pasó esto. "
                                 + resumen + ")")})
                 b.messages.append({"role": "assistant", "content": "Anotado."})
                 # Al historial va el detalle; en voz, una frase. Leer el
                 # registro entero en alto seria interminable.
                 n = len(hechos)
-                return (f"Te devuelvo el mando, Wilmer. ÍCARO se ocupó de "
-                        f"{n} {'encargo' if n == 1 else 'encargos'}; "
-                        "pregúntame por ellos si quieres el detalle.")
+                if quien == "ÍCARO":
+                    cosa = "encargo" if n == 1 else "encargos"
+                    return (f"Te devuelvo el mando, Wilmer. ÍCARO se ocupó de "
+                            f"{n} {cosa}; pregúntame por ellos si quieres el "
+                            "detalle.")
+                cosa = "pregunta" if n == 1 else "preguntas"
+                return (f"Vuelvo a ser yo, Wilmer. Me quedo con lo que hablaste "
+                        f"con ORFEO: {n} {cosa}. Pregúntame si quieres.")
         except Exception as e:
-            print(f"(no pude traer el resumen de ÍCARO: {e})", flush=True)
+            print(f"(no pude traer el resumen de {quien}: {e})", flush=True)
         return "Te devuelvo el mando, Wilmer. Vuelvo a ser PROMETEO."
 
     def _respond(self, text: str) -> str:
@@ -447,9 +459,8 @@ class Assistant:
 
         estado = cerebros.disponibles()
         if not estado.get(nombre, {}).get("ok"):
-            detalle = estado.get(nombre, {}).get("detalle", "")
             quien = cerebros.BONITO.get(nombre, nombre)
-            return text, (f"{quien} no está disponible ahora mismo: {detalle}. "
+            return text, (f"{quien} no está disponible ahora mismo. "
                           f"¿Quieres que lo resuelva yo?")
 
         if nombre == "ORFEO":
