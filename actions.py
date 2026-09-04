@@ -883,6 +883,64 @@ _CASA_INTOCABLE = {"", "Documentos", "Descargas", "Escritorio", "Imágenes",
                    "Música", "Vídeos", "Videos", "Plantillas", "Público"}
 
 
+# Como escribe un modelo el nombre de una carpeta y como se llama de verdad son
+# dos cosas distintas: sin tildes, en minusculas, o directamente en ingles.
+_ALIAS_CARPETAS = {
+    "documents": "Documentos",   "downloads": "Descargas",
+    "desktop":   "Escritorio",   "pictures":  "Imágenes",
+    "music":     "Música",       "videos":    "Vídeos",
+    "templates": "Plantillas",   "public":    "Público",
+}
+
+
+def _plano(s: str) -> str:
+    """En minusculas y sin tildes, para comparar nombres de archivo."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", s.lower())
+                   if unicodedata.category(c) != "Mn")
+
+
+def _casar_en_disco(p):
+    """La ruta REAL de p cuando el nombre no casa letra a letra. None si no hay.
+
+    Solo se usa cuando la ruta exacta NO existe, asi que nunca pisa un acierto:
+    en esta casa conviven `Music` y `Música`, y `Pictures` e `Imágenes`, y pedir
+    `Music` tiene que seguir abriendo `Music`.
+    """
+    from pathlib import Path
+    if p.exists():
+        return p
+    partes = list(p.parts)
+    if not partes:
+        return None
+    actual = Path(partes[0])
+    for seg in partes[1:]:
+        if (actual / seg).exists():
+            actual = actual / seg
+            continue
+        if not actual.is_dir():
+            return None
+        objetivo = _plano(seg)
+        elegido = None
+        try:
+            for hijo in actual.iterdir():
+                if _plano(hijo.name) == objetivo:
+                    elegido = hijo
+                    break
+        except OSError:
+            return None
+        if elegido is None:
+            # El alias de idioma va el ULTIMO y solo si el nombre espanol existe:
+            # llegar aqui ya prueba que el ingles no.
+            esp = _ALIAS_CARPETAS.get(objetivo)
+            if esp and (actual / esp).exists():
+                elegido = actual / esp
+        if elegido is None:
+            return None
+        actual = elegido
+    return actual
+
+
 def _ruta_casa(ruta: str, base: str = "Documentos"):
     """Resuelve una ruta dicha en voz alta y la encierra en la carpeta personal.
 
@@ -897,6 +955,21 @@ def _ruta_casa(ruta: str, base: str = "Documentos"):
     if not p.is_absolute():
         raiz = Path(base)
         p = (raiz if raiz.is_absolute() else Path.home() / base) / p
+        # Puede que no nombrara algo DENTRO de Documentos sino una carpeta de la
+        # casa ("las descargas", "el escritorio"). Si por la base no sale nada,
+        # se prueba colgando de la casa antes de rendirse.
+        if not p.exists() and _casar_en_disco(p) is None:
+            desde_casa = _casar_en_disco(Path.home() / Path(txt).expanduser())
+            if desde_casa is not None:
+                p = desde_casa
+    # Ultimo intento antes de dar la ruta por mala: casarla con lo que hay de
+    # verdad en el disco. El 03/09/2026 un cerebro pidio "/home/wilmer/Documents"
+    # y luego "/home/wilmer/documentos"; la carpeta se llama "Documentos", el
+    # sistema de archivos distingue mayusculas, y las dos fallaron. Wilmer se
+    # quedo con que no tenia carpeta de documentos.
+    real = _casar_en_disco(p)
+    if real is not None:
+        p = real
     casa = Path.home().resolve()
     try:
         # resolve(strict=False) sigue los symlinks: así un enlace que apunte
@@ -1160,6 +1233,9 @@ def leer_archivo(ruta: str, lineas: int = 200) -> str:
     destino, err = _ruta_casa(ruta)
     if err:
         return err
+    if destino.is_dir():
+        return (f"{_breve(destino)} es una carpeta, no un archivo. "
+                f"Para ver qué hay dentro, usa listar_carpeta.")
     if not destino.is_file():
         return f"No encuentro ese archivo: {_breve(destino)}"
     if destino.stat().st_size > 2_000_000:

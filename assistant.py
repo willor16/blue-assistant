@@ -4,6 +4,7 @@ import threading
 
 import config as config_mod
 import router
+import estilo
 import store
 
 
@@ -182,6 +183,7 @@ class Assistant:
             # uno no puede depender de que ningún motor esté libre.
             _modo = self._modo_intercepta(text)
             if _modo is not None:
+                _modo = estilo.hablado(_modo)
                 store.add("asistente", _modo)
                 if speak:
                     import voice
@@ -223,6 +225,7 @@ class Assistant:
                                 reply = f"{lines.error_line()} ({e})"
                                 propio = False
                     reply = self._quiza_ofrecer_orfeo(original, reply, propio)
+            reply = estilo.hablado(reply)
             store.add("asistente", reply)
             if speak:
                 import voice
@@ -264,6 +267,37 @@ class Assistant:
         rapida = router.fast_route(text)
         if rapida is not None:
             return rapida
+        # Nombrar a OTRO motor estando dentro de un modo. Esto NO se miraba, y
+        # el 03/09/2026 costo una sesion entera: Wilmer, dentro del modo ORFEO,
+        # dijo "vamos a usar a Erebo para hacer un programa". La frase no era ni
+        # una salida ni una orden de manos, asi que se la trago ORFEO como
+        # charla —y ORFEO, que no tiene herramientas, contesto inventandose que
+        # Erebo estaba caido—. El encargo nunca existio para nadie.
+        #
+        # Se avisa y no se hace nada mas, que es lo que pidio Wilmer: el modo es
+        # "como tener un asistente al telefono", y no se le cuelga a uno para
+        # llamar a otro sin decirlo. Se contesta AQUI, sin gastar un turno de
+        # modelo, asi que es instantaneo.
+        otro = cerebros.detectar(text)
+        if otro and otro[0] != self._modo:
+            yo = cerebros.BONITO.get(self._modo, self._modo)
+            el = cerebros.BONITO.get(otro[0], otro[0])
+            if otro[0] == "ARGOS":
+                return (f"{el} sigue siendo solo el nombre, Wilmer, no hay motor "
+                        f"detras. Y ahora mismo estas en modo {yo}.")
+            return (f"Estas en modo {yo}, Wilmer. Di terminamos y te paso "
+                    f"a {el}.")
+
+        # Y si es una orden para el escritorio que fast_route no cubre —abrir
+        # una app, un temporizador, apagar— la hace PROMETEO con sus manos, no
+        # el motor del modo. ORFEO no tiene manos: preguntarle "cierra Spotify"
+        # solo consigue que un modelo suelto te explique lo que es Alt+F4.
+        if router.es_orden_de_manos(text):
+            try:
+                return self.brain().think(text)
+            except Exception as e:
+                import lines
+                return f"{lines.error_line()} ({e})"
         import cerebros as _c
         if self._modo == "ICARO":
             # Se apunta lo que se pide y lo que sale, para poder contárselo a
@@ -276,7 +310,27 @@ class Assistant:
             # una generación entera de más (medido: 2,1 s de ORFEO + 1,9 s de
             # PROMETEO repitiéndolo) y aquí no aporta: Wilmer ha pedido
             # expresamente hablar con ORFEO.
-            return _c.consultar_orfeo(text)
+            #
+            # Va por el MISMO Brain que PROMETEO, con el rol de ORFEO pegado al
+            # final del prompt. Tuvo su propio bucle de herramientas durante unas
+            # horas del 03/09/2026 y fue un error: con tres vueltas y cinco
+            # herramientas, la primera vez que Wilmer pidió las carpetas de
+            # Documentos no tenía `listar_carpeta`, se quedó sin vueltas y
+            # contestó "me quedé dándole vueltas". Aquí hereda las 65
+            # herramientas, las 6 rondas, la cancelación con Super+J, el recorte
+            # de historial y el failover, que ya estaban escritos y probados.
+            #
+            # Y el historial pasa a ser el de la conversación, no uno aparte: lo
+            # que se hable con ORFEO ya está donde tiene que estar cuando se
+            # vuelva.
+            try:
+                cerebro = self.brain()
+                cerebro.rol_modo = _c.ROL_MODO_ORFEO
+                r = cerebro.think(text)
+            finally:
+                cerebro.rol_modo = ""
+            self._modo_hechos.append((text, (r or "")[:180]))
+            return r
         return _c.consultar_icaro(text)
 
     def _entrar_en_modo(self, nombre: str) -> str:

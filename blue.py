@@ -9,6 +9,7 @@ Modos:
   blue.py text "..." prueba por texto, sin microfono
 """
 from __future__ import annotations
+import datetime
 import os
 import shutil
 import subprocess
@@ -121,6 +122,52 @@ def tomar_cerrojo() -> bool:
     _cerrojo.write(f"{os.getpid()}\n")
     _cerrojo.flush()
     return True
+
+LOG_FILE = "/tmp/jd.log"
+
+
+def redirigir_salida_al_log() -> None:
+    """Manda stdout y stderr a /tmp/jd.log si nadie los esta recogiendo.
+
+    ensure_daemon() ya abre el log cuando es el quien arranca el daemon, pero
+    Hyprland lo lanza por su cuenta (hl.exec_cmd en hypr-user.lua) y por ahi los
+    descriptores 1 y 2 acaban en /dev/null: TODA la telemetria por turno se
+    estaba tirando, y sin log no se puede diagnosticar nada. Se arregla aqui,
+    dentro del daemon, y no en bin/blue, para que valga por las dos vias.
+
+    Solo se toca si la salida es /dev/null. Si es una terminal, un fichero (el
+    caso de ensure_daemon) o una tuberia, hay alguien recogiendola y secuestrarla
+    seria peor: quien lance `blue daemon` a mano quiere verlo en su terminal.
+    """
+    import stat
+    try:
+        st = os.fstat(1)
+        if not stat.S_ISCHR(st.st_mode) or st.st_rdev != os.stat(os.devnull).st_rdev:
+            return
+    except OSError:
+        return
+    try:
+        fd = os.open(LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    except OSError:
+        return
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    if fd > 2:
+        os.close(fd)
+    # bin/blue ya usa `python -u`, pero si alguien lo arranca sin la bandera el
+    # log se escribiria a bloques y las lineas apareceran tarde o se perderian
+    # si el proceso muere: justo lo contrario de para lo que se mira.
+    for f in (sys.stdout, sys.stderr):
+        try:
+            f.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+
 
 def ensure_daemon() -> bool:
     """Arranca el daemon si está apagado. Devuelve True si tuvo que arrancarlo."""
@@ -273,6 +320,23 @@ def main():
                 pass
             print(f"Ya hay un asistente en marcha{otro}. No arranco otro.")
             return
+
+        # Cerrojo tomado: a partir de aqui somos EL daemon, y lo que imprimamos
+        # es telemetria, no conversacion con quien lo lanzo. Al log.
+        redirigir_salida_al_log()
+        print(f"\n=== BLUE arranca {datetime.datetime.now():%d/%m %H:%M:%S} "
+              f"(PID {os.getpid()}) ===", flush=True)
+
+        # El alma de ICARO vive en un fichero de Hermes, fuera del repo, asi que
+        # no se actualiza sola al cambiar alma.py. Se pone al dia aqui, una vez
+        # por arranque: es barato y evita que ICARO se quede con un caracter
+        # viejo sin que nadie se entere.
+        try:
+            import cerebros
+            if cerebros.sincronizar_soul_de_icaro():
+                print("(alma de ICARO actualizada desde alma.py)", flush=True)
+        except Exception as e:
+            print(f"(no pude sincronizar el alma de ICARO: {e})", flush=True)
 
         if FIFO.exists():
             FIFO.unlink()

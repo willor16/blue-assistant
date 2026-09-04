@@ -9,6 +9,7 @@ import json
 import threading
 
 import actions
+import alma
 import protocols
 
 LAST_ACTIONS: list[str] = []
@@ -273,6 +274,38 @@ AVISAR = None
 # de una consulta pesada, sin tener que pasarse la instancia por seis sitios.
 _ACTIVO = None
 
+
+# Las herramientas que le pasan el trabajo a OTRO cerebro. Dentro de un modo no
+# se ofrecen: ver Brain.think.
+_DELEGAN = {"consultar_orfeo", "consultar_icaro", "dev_task"}
+
+
+def _describe_backend(b: dict) -> str:
+    """Como se dice en voz alta un backend de la cadena."""
+    if b.get("kind") == "ollama":
+        host = (b.get("base") or "").removeprefix("http://").removeprefix("https://")
+        # Mismo formato que el detalle de ORFEO, a proposito: son la misma
+        # maquina y el mismo runner, y decirlo de dos maneras distintas hizo que
+        # ORFEO concluyera que eran dos servidores.
+        return f"{b.get('model')} en el Ollama de casa ({host})"
+    return f"{b.get('model')} via {b.get('provider')}"
+
+
+def quien_contesta() -> tuple[str, str]:
+    """(el que contesto el ULTIMO turno, el PRIMERO de la cadena).
+
+    No tienen por que coincidir, y esa es justo la gracia de la cadena: que uno
+    se caiga y responda el siguiente. Antes esto no se podia saber desde fuera y
+    `cerebros.disponibles()` lo respondia leyendo `provider`/`model` del nivel
+    superior del config, que son la NUBE de respaldo, no el titular.
+    """
+    b = _ACTIVO
+    if b is None or not getattr(b, "backends", None):
+        return ("", "")
+    ultimo = b.ultimo_backend
+    return (_describe_backend(ultimo) if ultimo else "",
+            _describe_backend(b.backends[0]))
+
 _pesadas_en_curso = 0
 _pesadas_lock = threading.Lock()
 
@@ -444,11 +477,9 @@ TOOLS = [
     leer_archivo, escribir_archivo,
 ]
 
-SYSTEM_PROMPT = """Eres BLUE, el asistente de voz de Wilmer en Linux (CachyOS/Hyprland).
-
-PERSONALIDAD: confianzudo, sarcástico y gracioso SIEMPRE, pero eficiente y servicial, como un mayordomo brillante con chispa. Nunca grosero. SIEMPRE llamas al usuario "Wilmer" o "jefe". Primero cumples, luego rematas con una broma corta. Si dice algo raro o se equivoca, contéstale con humor. En órdenes serias (apagar, borrar) baja el tono y sé claro.
-
-ARCHIVOS: los archivos y carpetas de Wilmer SÍ los puedes tocar, dentro de su carpeta personal. Crear carpeta con crear_carpeta, ver qué hay con listar_carpeta, encontrar algo con buscar_archivo, y borrar, mover, renombrar, copiar, leer_archivo y escribir_archivo para lo demás. Borrar manda a la papelera y es recuperable, así que hazlo sin ceremonia cuando te lo pida. Si no encuentras algo a la primera, búscalo con buscar_archivo antes de decir que no existe, y no des por hecho el resultado: di lo que la herramienta te devolvió de verdad.
+SYSTEM_PROMPT = (
+    alma.IDENTIDAD + "\n\n" + alma.PERSONALIDAD + "\n\n"
+    + """ARCHIVOS: los archivos y carpetas de Wilmer SÍ los puedes tocar, dentro de su carpeta personal. Crear carpeta con crear_carpeta, ver qué hay con listar_carpeta, encontrar algo con buscar_archivo, y borrar, mover, renombrar, copiar, leer_archivo y escribir_archivo para lo demás. Borrar manda a la papelera y es recuperable, así que hazlo sin ceremonia cuando te lo pida. Si no encuentras algo a la primera, búscalo con buscar_archivo antes de decir que no existe, y no des por hecho el resultado: di lo que la herramienta te devolvió de verdad.
 
 CORREO/AGENDA/TAREAS: para revisar correo usa check_mail; para enviar uno redacta tú el cuerpo y usa send_email. Agenda con add_agenda/list_agenda. Para trabajo pesado (programar, correr tests, redactar documentos largos, investigar a fondo) usa dev_task con una instrucción clara; si dev_task devuelve algo que empieza con "CONFIRMAR:", repite esa parte pidiéndole permiso a Wilmer antes de continuar.
 
@@ -464,16 +495,9 @@ VISIÓN: SÍ puedes ver la pantalla de Wilmer. Si dice "mira mi pantalla", "qué
 
 MEMORIA: tienes memoria persistente entre sesiones. La sección "MEMORIA" de arriba (si aparece) es lo que ya sabes de Wilmer; úsala con naturalidad. Si Wilmer te cuenta algo que valga la pena recordar a futuro (una preferencia, un dato de un proyecto, una decisión, su forma de trabajar), usa remember para guardarlo. Si pregunta qué recuerdas o te falta contexto suyo, usa recall. Recordatorios con hora van a la agenda (add_agenda), NO a la memoria.
 
-COMO HABLAS (esto manda sobre todo lo demas): TE ESTAN ESCUCHANDO, NO LEYENDO. Todo lo que escribes se dice en voz alta con un sintetizador.
-- Frases cortas, del largo de una respiracion. Siempre en español.
-- NUNCA listas, ni viñetas, ni guiones al principio de linea, ni numeraciones, ni titulos en negrita. Si hay varias cosas que decir, las dices seguidas en prosa: "hago esto, esto y esto".
-- NUNCA markdown: ni asteriscos, ni almohadillas, ni comillas para destacar. Ni emojis, ni describir emojis con palabras.
-- Empiezas por la respuesta. Nada de "claro", "por supuesto", "buena pregunta" ni anunciar lo que vas a hacer antes de hacerlo.
-- Terminas cuando terminas. Nada de "en resumen", "en conclusion", "espero que te sirva" ni ofrecer ayuda al final. Ese "¿en que mas puedo ayudarte?" no lo dices nunca.
-- No dices URLs enteras ni rutas absolutas: di el nombre. "Abro YouTube", no la direccion; "la carpeta Descargas", no la ruta completa.
-- Si te preguntan que sabes hacer, lo cuentas hablando, no recitando un inventario.
-
-ACCIONES: usa SIEMPRE las herramientas, no inventes. Nunca digas que algo está hecho/abierto sin llamar la herramienta; repite el resultado real. Encadena varias en orden si hace falta. Temporizadores -> schedule_command. SÍ puedes cerrar todo y apagar/reiniciar/suspender. SÍ puedes ver qué ventanas/apps están abiertas: usa list_windows (nunca digas que no puedes verlas). Antes de algo irreversible con trabajo sin guardar, confirma en una frase corta. Si Wilmer dice en qué pantalla/monitor abrir algo ("en la pantalla 1/2"), pásalo en el parámetro screen de open_application.
+"""
+    + alma.COMO_HABLAS + "\n\n"
+    + """ACCIONES: usa SIEMPRE las herramientas, no inventes. Nunca digas que algo está hecho/abierto sin llamar la herramienta; repite el resultado real. Encadena varias en orden si hace falta. Temporizadores -> schedule_command. SÍ puedes cerrar todo y apagar/reiniciar/suspender. SÍ puedes ver qué ventanas/apps están abiertas: usa list_windows (nunca digas que no puedes verlas). Antes de algo irreversible con trabajo sin guardar, confirma en una frase corta. Si Wilmer dice en qué pantalla/monitor abrir algo ("en la pantalla 1/2"), pásalo en el parámetro screen de open_application.
 
 CONTROL DE VENTANAS Y SISTEMA: SÍ puedes manejar el escritorio de Wilmer. Para CAMBIAR a una app ya abierta ("ve a Brave", "pásate al código", "muéstrame el navegador") usa focus_window (NO la vuelvas a abrir). Para MOVER la ventana actual a otra pantalla, ponerla en pantalla completa, flotante o centrarla -> move_window. Portapapeles: "qué tengo copiado" -> clipboard_get; "copia esto" -> clipboard_set. Brillo: set_brightness (a un valor) o adjust_brightness (subir/bajar). "Toma una captura" -> take_screenshot (region=True si quiere seleccionar un área); si en cambio quiere que LEAS/interpretes la pantalla usa ver_pantalla.
 
@@ -488,8 +512,7 @@ PROTOCOLOS/PROYECTOS (un proyecto es un CONTENEDOR DE CONTEXTO: carpeta + tipo +
 
 NUNCA FINJAS ÉXITO: si una herramienta da error o "no tengo/no encontré X", dilo con tu tono y ofrece alternativa. No narres éxito falso.
 
-PROTOCOLOS AL EJECUTAR: run_protocol narra CADA paso en voz alta por su cuenta, en vivo. Tú NO repitas ni enumeres los pasos: solo añade UNA frase corta de cierre con chispa (ej. "Todo listo, Wilmer." o "Entorno armado, a darle."). Si run_protocol devuelve un error o "no tengo el protocolo X", dilo y no finjas.
-"""
+PROTOCOLOS AL EJECUTAR: run_protocol narra CADA paso en voz alta por su cuenta, en vivo. Tú NO repitas ni enumeres los pasos: solo añade UNA frase corta de cierre con chispa (ej. "Todo listo, Wilmer." o "Entorno armado, a darle."). Si run_protocol devuelve un error o "no tengo el protocolo X", dilo y no finjas.""")
 
 
 # --------- proveedores compatibles con la API de OpenAI -------------------
@@ -800,6 +823,20 @@ class Brain:
         _ACTIVO = self               # para recalentar el titular tras lo pesado
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self._degraded = False               # True = corriendo en fallback sin tools
+        # El backend que contesto el ultimo turno. Sin esto, preguntarle a BLUE
+        # que cerebro la esta pensando se respondia leyendo `provider`/`model`
+        # del nivel superior del config —"gpt-oss-120b via groq"— aunque el turno
+        # lo hubiera corrido el jarvis de casa. Wilmer llego a creer que sus
+        # modelos locales no se usaban nunca.
+        self.ultimo_backend = None
+        # Rol de MODO: texto que se pega al final del prompt del sistema cuando
+        # Wilmer le cede el turno a otro cerebro (ORFEO). Vacio = PROMETEO.
+        # Antes el modo ORFEO tenia su propio bucle de herramientas a mano en
+        # cerebros.py, con tres vueltas y cinco herramientas; el 03/09/2026 se
+        # quedo sin poder listar una carpeta y contesto "me quede dandole vueltas".
+        # Aqui hereda gratis las 6 rondas, la cancelacion, el recorte de
+        # historial, la telemetria y la cadena entera.
+        self.rol_modo = ""
 
     @staticmethod
     def _is_rate_limit(e) -> bool:
@@ -1276,14 +1313,36 @@ class Brain:
                 else:                                # nube: la dieta manda
                     self._schemas = list(self._dieta_schemas)
                     grupos = self._dieta_activos
+                # El rol del modo va al FINAL, y de eso depende que esto sea
+                # viable. Ollama cachea por PREFIJO de tokens: si el texto de
+                # ORFEO fuera delante, los ~11.400 tokens comunes divergirian
+                # desde el token cero y cada cambio de cerebro costaria releer el
+                # prefijo entero, que son los 30-40 s ya medidos el 01/09/2026.
+                # Yendo detras, PROMETEO y ORFEO comparten prefijo byte a byte y
+                # el cambio solo cuesta los ~400 tokens del rol.
+                if self.rol_modo:
+                    # Dentro de un modo, el que trabaja es el motor del modo.
+                    # Fuera TODAS las de delegar, no solo consultar_orfeo: el
+                    # 04/09/2026 se quito solo esa y ORFEO, queriendo delegar
+                    # igual, agarro consultar_icaro y lanzo una sesion entera de
+                    # ICARO desde dentro del modo. 21 segundos y un cerebro que
+                    # nadie llamo. Wilmer lo dijo claro con lo del asistente al
+                    # telefono: mientras habla con uno, no se le pasa a otro.
+                    self._schemas = [e for e in self._schemas
+                                     if e["function"]["name"] not in _DELEGAN]
                 self.messages[0] = {"role": "system",
-                                    "content": _system_content(grupos)}
+                                    "content": _system_content(grupos) + self.rol_modo}
                 try:
                     if b["kind"] == "openai":
-                        return self._run_openai(b)
-                    if b["kind"] == "ollama":
-                        return self._run_ollama(b)
-                    return self._run_claude_cli(b)
+                        r = self._run_openai(b)
+                    elif b["kind"] == "ollama":
+                        r = self._run_ollama(b)
+                    else:
+                        r = self._run_claude_cli(b)
+                    # Quien contesto DE VERDAD este turno. Se apunta despues de
+                    # que vuelva, no antes: intentarlo no es contestarlo.
+                    self.ultimo_backend = b
+                    return r
                 except Exception as e:
                     last_err = e
                     b["cooldown_until"] = time.time() + self._reposo(e)

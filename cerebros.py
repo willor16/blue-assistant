@@ -47,6 +47,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import alma
+import estilo
+
 CONFIG_DIR = Path.home() / ".config" / "blue"
 HERMES_PERFIL = CONFIG_DIR / "hermes"
 
@@ -209,7 +212,13 @@ _ALIAS = {
     "ORFEO":    r"orfe[oa]s?|orpheo|orfeu|orfe",
     "ARGOS":    r"argos|argus|arcos|argot",
     "ICARO":    r"h?[iy]car[oa]s?|h?icar",
-    "EREBO":    r"[hj]?ere[bv][oa]s?|[hj]?ere[bv]u[ms]|[hj]?ereb",
+    # La metatesis "erveo"/"herveo" es la que MAS sale y no estaba: el
+    # 03/09/2026 Wilmer dijo "vamos a usar a herveo para hacer un programa" y
+    # detectar() devolvio None, asi que el encargo se lo trago ORFEO como si
+    # fuera charla. Se anaden explicitas en vez de aflojar el patron: "her[bv]o"
+    # suelto se come "hervor".
+    "EREBO":    r"[hj]?ere[bv][oa]s?|[hj]?ere[bv]u[ms]|[hj]?ereb|"
+                r"h?er[bv]e[oa]s?|h?er[bv]e",
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -314,7 +323,8 @@ _DELEGA = (r"(?:preg[uú]ntale\s+a|preg[uú]ntaselo\s+a|p[aá]saselo\s+a|"
            r"mand[aá](?:selo)?\s+a|encarg\w*\s+(?:esto\s+)?a|delega\w*\s+en|"
            r"que\s+(?:lo|la|esto)\s+(?:vea|haga|hagas|resuelva|programe|escriba)|"
            r"que\s+se\s+encargue(?:\s+de)?|a\s+cargo\s+de|tira\s+de|"
-           r"(?:vamos\s+a\s+|voy\s+a\s+|quiero\s+)?"r"(?:us(?:a|ar|ame|ando)|utiliza(?:r|ndo)?|ocupa(?:r|ndo)?)\s*"
+           r"(?:vamos\s+a\s+|voy\s+a\s+|quiero\s+)?"
+           r"(?:us(?:a|ar|ame|ando)|utiliza(?:r|ndo)?|ocupa(?:r|ndo)?)\s*"
            r"(?:a\s+|al\s+|el\s+cerebro\s+de\s+|la\s+de\s+)?|"
            r"con\s+(?:el\s+cerebro\s+de\s+)?|el\s+cerebro\s+de\s+|llama\s+a)\s*")
 
@@ -372,6 +382,10 @@ def detectar(texto: str):
             limpio = (_recortar_original(t, 0)[:d.start()] + " "
                       + _recortar_original(t, 0)[d.end():])
             limpio = re.sub(r"\s{2,}", " ", limpio).strip(" ,;:.")
+            # "vamos a usar a Erebo PARA hacer un programa" deja el encargo
+            # empezando por una preposicion suelta. Se quita: el motor recibe
+            # "hacer un programa", no "para hacer un programa".
+            limpio = re.sub(r"^(?:para|y|que)\s+", "", limpio, flags=re.I)
             # "¿qué usa érebo?" es una pregunta, no un encargo: si al quitar el
             # trozo de delegación no queda tarea y la frase abría preguntando,
             # no lo estamos llamando.
@@ -402,6 +416,56 @@ def _ollama_modelos(timeout=2.5) -> list:
         return []
 
 
+# Como se cuenta cada cerebro EN VOZ ALTA: que hace para Wilmer, sin una sola
+# marca. Deliberadamente no se saca de ESCALAFON["que_es"], que si nombra la
+# fontaneria porque es documentacion del codigo.
+_VOZ_DEL_MOTOR = {
+    "PROMETEO": "la voz: conversa, maneja el escritorio y cuenta lo que hacen los demas",
+    "ORFEO":    "el que piensa despacio, cuando una pregunta merece razonarse a fondo",
+    "ARGOS":    "reservado: guardaste el nombre, todavia no hay cerebro detras",
+    "ICARO":    "el que hace encargos por su cuenta, con sus propias herramientas",
+    "EREBO":    "el que programa de verdad: proyectos, pruebas y analisis pesados",
+}
+
+
+def _casa() -> str:
+    """Como se nombra en voz alta la maquina donde vive el Ollama de casa."""
+    h = ollama_host().removeprefix("http://").removeprefix("https://")
+    return f"el Ollama de casa ({h})"
+
+
+def _detalle_prometeo(cfg: dict) -> str:
+    """Que motor esta usando PROMETEO de verdad.
+
+    Esto decia f"{cfg['model']} via {cfg['provider']}", y esas dos claves del
+    NIVEL SUPERIOR del config son la nube de respaldo (groq / gpt-oss-120b). O
+    sea que preguntarle a BLUE por sus cerebros contestaba "gpt-oss-120b via
+    groq" incluso con el jarvis de casa cargado y contestando cada turno. El
+    03/09/2026 eso le hizo creer a Wilmer que sus modelos locales no se usaban.
+
+    Lo que manda es la cadena [[brain]], y sobre todo quien contesto el ultimo
+    turno, que es un dato vivo y no una suposicion.
+    """
+    try:
+        import brain
+        ultimo, primero = brain.quien_contesta()
+    except Exception:
+        ultimo = primero = ""
+    if not primero:
+        cadena = cfg.get("brain") or []
+        if cadena:
+            b = cadena[0]
+            primero = (f"{b.get('model')} en {_casa()}"
+                       if b.get("provider") == "ollama"
+                       else f"{b.get('model')} via {b.get('provider')}")
+        else:
+            primero = f"{cfg.get('model', '?')} via {cfg.get('provider', '?')}"
+    if ultimo and ultimo != primero:
+        # La cadena hizo su trabajo: conviene que se note, no que se disimule.
+        return f"{ultimo} (el titular es {primero}, pero no contesto)"
+    return ultimo or primero
+
+
 def disponibles(segundos=90) -> dict:
     """Estado real de cada motor. Con caché corta: preguntar por la red en cada
     turno de voz costaría medio segundo de más por nada."""
@@ -414,12 +478,16 @@ def disponibles(segundos=90) -> dict:
     cfg = _cfg()
     estado = {
         "PROMETEO": {"ok": bool(cfg.get("api_key") or cfg.get("brain")),
-                     "detalle": f"{cfg.get('model', '?')} vía {cfg.get('provider', '?')}"},
+                     "detalle": _detalle_prometeo(cfg)},
         # ORFEO corre en el MISMO modelo que PROMETEO (ver consultar_orfeo): se
         # comprueba ese, no "jarvis-heavy". Preguntar por un nombre que ya no se
         # usa daria a ORFEO por caido teniendo el motor delante.
+        # El detalle dice el MISMO host que el de PROMETEO a proposito. Cuando
+        # uno decia "el Ollama de casa" y el otro la URL entera, ORFEO leyo sus
+        # propios datos y concluyo que corrian en dos maquinas distintas. Son la
+        # misma, el mismo modelo y el mismo runner: ver consultar_orfeo.
         "ORFEO": {"ok": _motor_de_casa()[0] in modelos,
-                  "detalle": (_motor_de_casa()[0] + " en " + ollama_host())
+                  "detalle": (_motor_de_casa()[0] + " en " + _casa())
                              if _motor_de_casa()[0] in modelos
                              else "la otra PC no responde"},
         "ARGOS": {"ok": False, "detalle": "reservado, aún no existe"},
@@ -429,6 +497,22 @@ def disponibles(segundos=90) -> dict:
     }
     if shutil.which("hermes") and not HERMES_PERFIL.exists():
         estado["ICARO"]["detalle"] = "hermes instalado pero sin perfil de BLUE"
+    # Dos caras a proposito, y no es cosmetica.
+    #
+    # `detalle` es fontaneria: nombre del modelo, host, proveedor. Sirve para el
+    # log y para diagnosticar, y ahi hace falta entero.
+    #
+    # `voz` es lo unico que puede salir por el altavoz. Wilmer fue tajante y lo
+    # repitio el 04/09/2026: los cerebros se llaman PROMETEO, ORFEO, ARGOS,
+    # ICARO y EREBO, y punto; ni marcas, ni modelos, ni proveedores. La regla ya
+    # estaba en bloque_conciencia(), pero solo la leia PROMETEO: el 03/09 se le
+    # dio a ORFEO una herramienta de estado que devolvia `detalle` en crudo, y
+    # ORFEO recito que dos corrian en la Mac y el otro era Claude Code.
+    #
+    # Un prompt que prohibe decir algo es mas debil que no metersele delante. Asi
+    # que lo que ve un cerebro es `voz`; `detalle` no sale de aqui.
+    for n, v in estado.items():
+        v["voz"] = _VOZ_DEL_MOTOR.get(n, "")
     _cache["disp"] = (ahora, estado)
     return estado
 
@@ -498,17 +582,220 @@ def frase_de_espera(modelo: str, quien: str = "otro cerebro") -> str:
 # ══════════════════════════════════════════════════════════════
 #  Consultar a ORFEO
 # ══════════════════════════════════════════════════════════════
-_ORFEO_GUARD = (
-    "Eres ORFEO, el motor de razonamiento pesado de BLUE. Te llega una consulta "
-    "de Wilmer a través de BLUE. Piensa a fondo y responde en español, en prosa "
-    "corrida, sin listas, sin markdown, sin asteriscos y sin emojis, porque tu "
-    "respuesta se va a leer en voz alta. Ve al grano: dos o tres párrafos como "
-    "mucho. Si no sabes algo, dilo."
+def _pedir_a_ollama(ruta: str, cuerpo: bytes, timeout: float) -> dict:
+    """Una peticion al Ollama de casa, con UN segundo intento en el host recordado.
+
+    El 03/09/2026 dos turnos seguidos de ORFEO murieron con
+    "[Errno 111] Connection refused" y ahi se acabo el turno: el usuario se
+    queda mirando un mensaje de error. Y resulta que la red ya se habia
+    resuelto sola, porque buscar_ollama_en_la_red() habia dejado escrito
+    `~/.config/blue/ollama_encontrado`... que ollama_host() NO LEE. Estaba todo
+    el mecanismo de recuperacion escrito y desconectado.
+
+    Solo se reintenta ante fallo de CONEXION. Un timeout no se reintenta: seria
+    pagar el plazo dos veces, y con 240 s eso son ocho minutos de "pensando".
+    """
+    hosts = [ollama_host()]
+    rec = (host_recordado() or "").rstrip("/")
+    if rec and rec != hosts[0]:
+        hosts.append(rec)
+    ultimo = None
+    for i, h in enumerate(hosts):
+        req = urllib.request.Request(h + ruta, data=cuerpo,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.loads(r.read().decode())
+        except urllib.error.URLError as e:
+            ultimo = e
+            if isinstance(e.reason, TimeoutError):
+                raise
+            continue
+        if i:
+            print(f"(el Ollama de casa no estaba en {hosts[0]}, si en {h}: me quedo con ese)",
+                  flush=True)
+            recordar_host(h)
+        return d
+    raise ultimo
+
+
+# ── Las manos de ORFEO: pocas, y todas de solo lectura ──────────────────────
+# El 03/09/2026 Wilmer le pidio a ORFEO que verificara la conexion de los
+# cerebros. ORFEO no tenia NI UNA herramienta, asi que contesto "Verificando
+# conexion..." y se invento el resultado; luego se invento dos cerebros que
+# nunca existieron ("Aikaro", "Lumina") y una version "beta 0.7.2". No mintio
+# por maldad: se le pidio un dato que no tenia forma de mirar.
+#
+# La correccion no es prohibirselo por prompt —un 80B a temperatura 0,4 se salta
+# eso tarde o temprano—, es DARLE la manera de mirar.
+#
+# Ahora bien, POCAS. ORFEO corre en el mismo motor que PROMETEO (ver
+# _motor_de_casa), asi que una herramienta le cuesta exactamente lo mismo; lo
+# que no puede heredar son las 65, porque esos ~11.400 tokens de prefijo son
+# justo lo que hace que PROMETEO se sienta mas pesado que el. Con estas cinco el
+# prefijo se queda muy por debajo de 1.500 tokens y ORFEO sigue en ~2 s.
+#
+# Y todas de LECTURA. ORFEO piensa, no ejecuta: si hace falta una accion, lo
+# dice y la hace BLUE, que para eso tiene las manos.
+
+def _t_estado_de_los_motores() -> str:
+    # `voz`, NUNCA `detalle`: ver el comentario de las dos caras en disponibles().
+    d = disponibles()
+    partes = []
+    for nombre, info in d.items():
+        partes.append(f"{BONITO.get(nombre, nombre)}: "
+                      + ("disponible" if info["ok"] else "no disponible ahora")
+                      + f", {info['voz']}")
+    return ("\n".join(partes)
+            + "\nSois cinco y esos cinco nombres son la respuesta entera. No digas "
+              "nunca con que esta hecho ninguno: ni marcas, ni modelos, ni "
+              "proveedores, ni en que maquina corre. Si Wilmer insiste, es "
+              "fontaneria y para el son PROMETEO, ORFEO, ARGOS, ICARO y EREBO.")
+
+
+def _t_leer_log(lineas: int = 80) -> str:
+    try:
+        with open("/tmp/jd.log", "rb") as f:
+            # Solo el final: el log de un dia entero no cabe en la ventana, y
+            # ademas un resultado enorme desborda el historial (ya paso).
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 60_000))
+            cola = f.read().decode("utf-8", "replace").split("\n")
+    except OSError as e:
+        return f"no puedo leer el log: {e}"
+    return "\n".join(cola[-max(1, min(int(lineas or 80), 300)):]) or "el log esta vacio"
+
+
+def _t_recall(consulta: str = "") -> str:
+    import memory
+    return memory.recall(consulta)
+
+
+def _t_consultar_documentos(pregunta: str) -> str:
+    import rag
+    return rag.search(pregunta)
+
+
+def _t_leer_archivo(ruta: str, lineas: int = 200) -> str:
+    import actions
+    return actions.leer_archivo(ruta, lineas)
+
+
+def _t_listar_carpeta(ruta: str = "") -> str:
+    import actions
+    return actions.listar_carpeta(ruta)
+
+
+def _t_buscar_archivo(nombre: str, dentro: str = "") -> str:
+    import actions
+    return actions.buscar_archivo(nombre, dentro)
+
+
+_ORFEO_HERRAMIENTAS = {
+    "estado_de_los_motores": (_t_estado_de_los_motores, {
+        "description": "Dice cuales de los cinco motores de BLUE (PROMETEO, ORFEO, ARGOS, ICARO, EREBO) estan disponibles ahora mismo y con que modelo corren. Usala SIEMPRE que te pregunten si algo esta en linea, que cerebros hay, cual te esta pensando a ti o por que algo no responde. Es la unica manera que tienes de saberlo: no lo supongas.",
+        "parameters": {"type": "object", "properties": {}},
+    }),
+    "leer_log": (_t_leer_log, {
+        "description": "Devuelve el final del log de BLUE (/tmp/jd.log), donde queda el tiempo de cada turno, los tokens de prefijo, si estaba frio o caliente y los fallos. Usala si preguntan por que algo tardo, fallo o se trabo.",
+        "parameters": {"type": "object", "properties": {
+            "lineas": {"type": "integer", "description": "Cuantas lineas del final, entre 1 y 300. Por defecto 80."}}},
+    }),
+    "recall": (_t_recall, {
+        "description": "Consulta tu memoria persistente sobre Wilmer y su trabajo. consulta opcional para filtrar por tema; vacio trae lo mas reciente. Usala si te falta contexto suyo o si te preguntan que recuerdas.",
+        "parameters": {"type": "object", "properties": {
+            "consulta": {"type": "string", "description": "Tema por el que filtrar. Opcional."}}},
+    }),
+    "consultar_documentos": (_t_consultar_documentos, {
+        "description": "Busca por significado en los documentos que Wilmer ya indexo (apuntes, normas, datasheets, manuales, PDFs) y trae los pasajes relevantes. Responde TU a partir de ellos, citando el documento, y no inventes lo que no este.",
+        "parameters": {"type": "object", "properties": {
+            "pregunta": {"type": "string", "description": "Que buscar."}},
+            "required": ["pregunta"]},
+    }),
+    # listar_carpeta y buscar_archivo faltaban, y se noto: el 03/09/2026 Wilmer
+    # pidio las carpetas de Documentos, ORFEO no tenia con que listarlas, lo
+    # intento con leer_archivo sobre un directorio y agoto las vueltas.
+    "listar_carpeta": (_t_listar_carpeta, {
+        "description": "Dice que hay dentro de una carpeta de Wilmer: archivos y subcarpetas. Usala SIEMPRE que te pregunte que tiene en una carpeta. Sin ruta, mira la de documentos. NO uses leer_archivo para esto.",
+        "parameters": {"type": "object", "properties": {
+            "ruta": {"type": "string", "description": "Carpeta a mirar. Vacio = la de documentos."}}},
+    }),
+    "buscar_archivo": (_t_buscar_archivo, {
+        "description": "Busca por nombre dentro de la carpeta personal de Wilmer. Usala para localizar algo cuando no sepas donde esta, antes de decir que no existe.",
+        "parameters": {"type": "object", "properties": {
+            "nombre": {"type": "string", "description": "Parte del nombre."},
+            "dentro": {"type": "string", "description": "Carpeta donde buscar. Opcional."}},
+            "required": ["nombre"]},
+    }),
+    "leer_archivo": (_t_leer_archivo, {
+        "description": "Lee un archivo de texto de Wilmer (txt, md, csv, codigo, configuracion) para que puedas razonar sobre su contenido. Para PDFs y apuntes usa consultar_documentos.",
+        "parameters": {"type": "object", "properties": {
+            "ruta": {"type": "string", "description": "Ruta del archivo."},
+            "lineas": {"type": "integer", "description": "Cuantas lineas leer. Por defecto 200."}},
+            "required": ["ruta"]},
+    }),
+}
+
+
+def _orfeo_esquemas() -> list:
+    return [{"type": "function", "function": {"name": n, **esq}}
+            for n, (_, esq) in _ORFEO_HERRAMIENTAS.items()]
+
+
+# El rol del MODO ORFEO. Ojo, este NO pasa por alma.guard: se PEGA AL FINAL del
+# prompt de PROMETEO (ver brain.Brain.rol_modo), asi que el alma, las 65
+# herramientas y la regla de no nombrar la fontaneria ya vienen puestas de
+# arriba. Repetirlas aqui moveria el prefijo para nada.
+ROL_MODO_ORFEO = (
+    "\n\n== AHORA MISMO ERES ORFEO ==\n"
+    "Wilmer te ha cedido el turno a ORFEO, el que piensa despacio. Sigues siendo "
+    "BLUE, con el mismo caracter y las mismas manos: puedes usar todas tus "
+    "herramientas igual que siempre, y si te pide algo del escritorio lo HACES, "
+    "no lo explicas.\n"
+    "Lo que cambia es como piensas: antes de contestar te tomas el tiempo de "
+    "razonar de verdad, miras lo que haga falta mirar y no despachas de "
+    "primeras.\n"
+    # Cuatro frases no es capricho: Kokoro sintetiza a unas 2,2 veces el tiempo
+    # real, asi que un parrafo de 140 tokens son 28-43 SEGUNDOS de Wilmer
+    # escuchando. Medido en su log del 01/09/2026.
+    "Pero al hablar sigues siendo breve: maximo cuatro o cinco frases, salvo que "
+    "te pida expresamente el detalle largo. Piensa largo, habla corto.\n"
+    "Y no finjas haber mirado nada: no digas 'verificando', 'consultando' ni "
+    "'revisando' sin haber llamado antes a la herramienta. O la llamas de "
+    "verdad, o dices que no lo sabes."
 )
 
 
-def consultar_orfeo(pregunta: str, timeout: float = 240.0) -> str:
-    """Le pasa la pregunta al modelo de casa con el guard de ORFEO, en crudo.
+_ORFEO_ROL = (
+    "AHORA MISMO eres ORFEO, el modo de pensar a fondo de BLUE. Sigues siendo "
+    "BLUE y hablas igual que siempre: mismo caracter, mismo tono, llamandole "
+    "Wilmer o jefe. Lo unico que cambia es que aqui te tomas el tiempo de "
+    "razonar de verdad en vez de despachar.\n"
+    # Cuatro frases no es capricho: Kokoro sintetiza a unas 2,2 veces el tiempo
+    # real, asi que las respuestas de 140 tokens que soltaba antes eran 28 y 43
+    # SEGUNDOS de Wilmer escuchando un parrafo que no habia pedido. Medido en su
+    # log del 01/09/2026: "turno de voz COMPLETO 55.0 s = ... hablar 43.2".
+    "Maximo cuatro o cinco frases, salvo que te pidan expresamente el detalle "
+    "largo: cada frase de mas son segundos de Wilmer esperando a que calles.\n"
+    "TIENES CINCO HERRAMIENTAS Y NINGUNA MAS: estado_de_los_motores, leer_log, "
+    "recall, consultar_documentos y leer_archivo. Todas son de leer. No tienes "
+    "manos: no puedes abrir ni cerrar programas, ni mover ventanas, ni escribir "
+    "archivos, ni tocar el ordenador. Si hace falta una accion, dilo en UNA "
+    "frase y la hace BLUE por su cuenta; no expliques atajos de teclado ni "
+    "pasos.\n"
+    "NUNCA digas 'verificando', 'consultando', 'revisando' ni 'comprobando' sin "
+    "haber llamado antes a la herramienta: o la llamas de verdad, o dices que "
+    "eso no lo puedes mirar tu. Y no inventes NUNCA datos del sistema, "
+    "historiales, versiones ni nombres de motores: los motores son exactamente "
+    "cinco y te los dice estado_de_los_motores. Si no sabes algo, dilo."
+)
+
+_ORFEO_GUARD = alma.guard(_ORFEO_ROL)
+
+
+def consultar_orfeo(pregunta: str, timeout: float = 240.0,
+                    historial: list | None = None) -> str:
+    """Le pasa la pregunta al modelo de casa con el alma de BLUE y el rol de ORFEO.
 
     Se usa el endpoint NATIVO de Ollama con think:false a propósito. Por /v1 los
     modelos de razonamiento gastan la salida en el campo `reasoning` y `content`
@@ -529,48 +816,159 @@ def consultar_orfeo(pregunta: str, timeout: float = 240.0) -> str:
     # de 68 s con 47 de ellos solo pensando. Todo para acabar en el mismo modelo.
     #
     # Pidiendo el mismo nombre y la misma ventana se reutiliza el runner que ya
-    # esta caliente. Lo que hace a ORFEO distinto no son los pesos, es
-    # _ORFEO_GUARD, y ese viaja en la peticion.
+    # esta caliente. Lo que hace a ORFEO distinto no son los pesos, es el rol,
+    # y ese viaja en la peticion.
     modelo, ventana = _motor_de_casa()
-    cuerpo = json.dumps({
-        "model": modelo,
-        "think": False,
-        "stream": False,
-        "options": {"temperature": 0.4, "num_ctx": ventana},
-        "messages": [
-            {"role": "system", "content": _ORFEO_GUARD},
-            {"role": "user", "content": (pregunta or "").strip()},
-        ],
-    }).encode()
+    mensajes = [
+        {"role": "system", "content": _ORFEO_GUARD},
+        # Con lo dicho antes, si lo hay. Sin esto cada frase llegaba sola y sin
+        # pasado: Wilmer preguntó "¿qué cerebro estás usando?", ORFEO contestó,
+        # él aclaró "o sea, cuál de todos los de la lista" —y ORFEO no tenía ni
+        # la pregunta anterior ni su propia respuesta—. En modo ORFEO se habla
+        # seguido, así que la conversación tiene que llegarle.
+        *(historial or []),
+        {"role": "user", "content": (pregunta or "").strip()},
+    ]
     _t0 = time.time()
-    req = urllib.request.Request(ollama_host() + "/api/chat", data=cuerpo,
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = json.loads(r.read().decode())
-    except urllib.error.URLError as e:
-        return f"(ORFEO no contesta: {e.reason})"
-    except Exception as e:
-        return f"(ORFEO falló: {e})"
-    # Telemetria, como la de PROMETEO. Sin esto una consulta a ORFEO era un
-    # agujero negro en el log: solo se veia el "pensar 47 s" del turno de voz,
-    # sin poder saber si el tiempo se iba en cargar el modelo, en releer el
-    # prefijo o en generar.
-    _ld = d.get("load_duration", 0) / 1e9
-    _ped = d.get("prompt_eval_duration", 0) / 1e9
-    _ev, _evd = d.get("eval_count", 0), d.get("eval_duration", 0) / 1e9
-    print(f"(ORFEO {time.time() - _t0:.1f} s [{modelo} ctx{ventana}] | "
-          + (f"cargar modelo {_ld:.1f} s | " if _ld > 1 else "")
-          + f"prefijo {d.get('prompt_eval_count', 0)} tok en {_ped:.1f} s "
-          + f"{'FRIO' if _ped > 3 else 'caliente'} | "
-          + f"genera {_ev} tok en {_evd:.1f} s)", flush=True)
-    texto = (d.get("message", {}) or {}).get("content", "").strip()
-    return texto or "(ORFEO devolvió una respuesta vacía)"
+    _tok_prefijo = _llamadas = 0
+
+    # Cuatro vueltas de tope. Con tres se quedo corto el 03/09/2026: buscar,
+    # leer y contestar ya son tres, y un tropiezo por el camino agotaba el cupo.
+    # Sin tope ninguno, un modelo que se emperra en llamar lo mismo deja a Wilmer
+    # escuchando silencio.
+    for _vuelta in range(4):
+        cuerpo = json.dumps({
+            "model": modelo,
+            "think": False,
+            "stream": False,
+            "options": {"temperature": 0.4, "num_ctx": ventana},
+            "tools": _orfeo_esquemas(),
+            "messages": mensajes,
+        }).encode()
+        try:
+            d = _pedir_a_ollama("/api/chat", cuerpo, timeout)
+        except urllib.error.URLError as e:
+            return f"(ORFEO no contesta: {e.reason})"
+        except Exception as e:
+            return f"(ORFEO falló: {e})"
+
+        _tok_prefijo = d.get("prompt_eval_count", 0)
+        msg = d.get("message", {}) or {}
+        llamadas = msg.get("tool_calls") or []
+        if not llamadas:
+            # Telemetria, como la de PROMETEO. Sin esto una consulta a ORFEO era
+            # un agujero negro en el log: solo se veia el "pensar 47 s" del turno
+            # de voz, sin saber en que se iba.
+            _ld = d.get("load_duration", 0) / 1e9
+            _ped = d.get("prompt_eval_duration", 0) / 1e9
+            _ev, _evd = d.get("eval_count", 0), d.get("eval_duration", 0) / 1e9
+            print(f"(ORFEO {time.time() - _t0:.1f} s [{modelo} ctx{ventana}] | "
+                  + (f"cargar modelo {_ld:.1f} s | " if _ld > 1 else "")
+                  + f"prefijo {_tok_prefijo} tok en {_ped:.1f} s "
+                  + f"{'FRIO' if _ped > 3 else 'caliente'} | "
+                  + (f"{_llamadas} herramienta(s) | " if _llamadas else "")
+                  + f"genera {_ev} tok en {_evd:.1f} s)", flush=True)
+            # Por estilo.hablado ANTES de devolverlo. voice.py ya lo aplica,
+            # pero solo camino del sintetizador: lo que se guarda en el
+            # historial y lo que se ve en el panel se quedaba en crudo. El
+            # 03/09/2026 Wilmer vio en el panel las viñetas, los saltos de linea
+            # de markdown y el "¿queres que pruebe alguno?" de despedida que el
+            # alma prohibe expresamente. Y ademas ese texto crudo volvia como
+            # historial en el turno siguiente, o sea que le ensenaba a ORFEO a
+            # seguir escribiendo asi.
+            texto = estilo.hablado(msg.get("content", "").strip())
+            return texto or "(ORFEO devolvió una respuesta vacía)"
+
+        mensajes.append(msg)
+        for lla in llamadas:
+            fn = (lla.get("function") or {})
+            nombre = fn.get("name", "")
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            entrada = _ORFEO_HERRAMIENTAS.get(nombre)
+            if entrada is None:
+                res = f"(no existe la herramienta {nombre})"
+            else:
+                try:
+                    res = entrada[0](**args)
+                except Exception as e:
+                    # Un fallo de herramienta se le DICE al modelo en vez de
+                    # reventar el turno: asi puede contarlo en vez de callarse.
+                    res = f"(error en {nombre}: {type(e).__name__}: {e})"
+            _llamadas += 1
+            print(f"(ORFEO -> {nombre}({', '.join(f'{k}={v!r}' for k, v in args.items())}))",
+                  flush=True)
+            # Tope por resultado. Un leer_archivo sobre un JSON minificado mete
+            # cientos de miles de caracteres en un solo mensaje, Ollama trunca
+            # por el PRINCIPIO y se lleva el prompt del sistema: ORFEO se vuelve
+            # tonto sin dar error. Ya paso con PROMETEO el 31/08/2026.
+            texto_res = str(res)
+            if len(texto_res) > 6000:
+                texto_res = texto_res[:6000] + "\n(...cortado)"
+            mensajes.append({"role": "tool", "tool_name": nombre,
+                             "content": texto_res})
+
+    print("(ORFEO agota las vueltas sin cerrar respuesta: lo recoge PROMETEO)",
+          flush=True)
+    return ("(ORFEO no llegó a una respuesta con lo que tiene a mano. Esto lo "
+            "puedes mirar tú, que tienes todas las herramientas: hazlo y "
+            "contéstale a Wilmer sin mencionar este rodeo.)")
 
 
 # ══════════════════════════════════════════════════════════════
 #  Consultar a ÍCARO (Hermes Agent, con su propio perfil)
 # ══════════════════════════════════════════════════════════════
+# El alma de ICARO vive en un fichero, no en una constante: Hermes lo lee de
+# ~/.config/blue/hermes/SOUL.md, fuera del repo. Se genera desde alma.py como los
+# demas para que no se quede atras cuando cambie el caracter de BLUE, que es
+# justo lo que le habia pasado.
+_ICARO_ROL = (
+    "AHORA MISMO eres ICARO, el motor de encargos de BLUE. Cuando Wilmer te "
+    "cede el mando hablas TU directamente con el: no eres una herramienta "
+    "silenciosa, eres quien lleva la conversacion mientras dure el proyecto.\n"
+    "Las reglas de arriba sobre como hablas valen para lo que le DICES a Wilmer, "
+    "no para el codigo ni los archivos que escribas: dentro de un archivo pon lo "
+    "que haga falta con su formato normal.\n"
+    "COMO TRABAJAS:\n"
+    "- Trabaja DENTRO de la carpeta actual: crea y edita ahi, y no te lleves "
+    "nada a otro sitio. Di la ruta de lo que toques, sin deletrearla entera.\n"
+    "- NO borres archivos ni instales o desinstales paquetes salvo que Wilmer lo "
+    "pida con esas palabras. Si hiciera falta y no te lo pidio, no lo hagas y "
+    "diselo.\n"
+    "- Cuando termines algo, di en una frase que quedo hecho.\n"
+    "- Si Wilmer te pregunta algo que no es del proyecto, contestale igual y con "
+    "naturalidad: mientras tengas el mando, eres tu quien conversa con el."
+)
+
+SOUL_ICARO = HERMES_PERFIL / "SOUL.md"
+
+
+def sincronizar_soul_de_icaro() -> bool:
+    """Deja el SOUL.md de Hermes al dia con alma.py. True si lo cambio.
+
+    Se guarda una copia de lo anterior la primera vez (SOUL.md.previo) para no
+    perder de vista lo que habia, igual que ya existe SOUL.md.original.
+    """
+    nuevo = alma.guard(_ICARO_ROL) + "\n"
+    try:
+        if not HERMES_PERFIL.exists():
+            return False
+        anterior = SOUL_ICARO.read_text() if SOUL_ICARO.exists() else ""
+        if anterior == nuevo:
+            return False
+        if anterior and not (HERMES_PERFIL / "SOUL.md.previo").exists():
+            (HERMES_PERFIL / "SOUL.md.previo").write_text(anterior)
+        SOUL_ICARO.write_text(nuevo)
+        return True
+    except OSError as e:
+        print(f"(no pude actualizar el alma de ICARO: {e})", flush=True)
+        return False
+
+
 _ICARO_GUARD = (
     "Eres ÍCARO, el motor de encargos de BLUE, el asistente de Wilmer, en su PC "
     "Linux (CachyOS/Hyprland). Haz el ENCARGO que va al final. Reglas:\n"

@@ -8,6 +8,7 @@ pedido EXPLÍCITAMENTE. Si la tarea lo requiere y no estaba claro, NO lo hace:
 devuelve una línea 'CONFIRMAR:' y Blue te pide permiso antes de proceder.
 """
 from __future__ import annotations
+import alma
 import re
 import subprocess
 import time
@@ -61,9 +62,18 @@ _STRIP_PREFIX = re.compile(
     r"^([hj]?[eé]rebo[,:.\s]+|tarea[:,]?\s+|usa\s+claude\s+code[,:]?\s+|con\s+claude\s+code[,:]?\s+|"
     r"usa\s+el\s+bueno[,:]?\s+|usa\s+sonnet[,:]?\s+)", re.IGNORECASE)
 
-_GUARD = (
-    "Eres el motor de tareas de BLUE, el asistente de Wilmer, en su PC Linux "
-    "(CachyOS/Hyprland). Ejecuta la TAREA que sigue. Reglas:\n"
+# El alma va delante, como en los demas cerebros. Hasta el 03/09/2026 esto
+# empezaba en "Eres el motor de tareas de BLUE" y ya: EREBO no tenia caracter
+# ninguno, asi que su frase final —que se lee EN VOZ ALTA— sonaba a otro. Wilmer
+# lo pidio explicito: la personalidad de BLUE va en todos los cerebros.
+_ROL = (
+    "AHORA MISMO eres EREBO, el motor de trabajo pesado de BLUE: programar, "
+    "correr tests, redactar largo, analisis FEM. Ejecuta la TAREA que sigue.\n"
+    "OJO con una cosa: las reglas de arriba sobre como hablas valen para lo que "
+    "le DICES a Wilmer al terminar, no para el codigo ni los documentos que "
+    "escribas. Dentro de un archivo pon lo que haga falta, con su formato "
+    "normal; lo que no lleva markdown ni listas es tu respuesta hablada.\n"
+    "Reglas:\n"
     "- Puedes leer/escribir archivos, correr comandos, tests y buscar en la web.\n"
     "- BORRAR archivos o INSTALAR/DESINSTALAR paquetes SIEMPRE requiere "
     "confirmación: aunque el usuario lo haya pedido, NO lo ejecutes todavía. En su "
@@ -80,6 +90,8 @@ _GUARD = (
     "encontraste, para que se lea en voz alta. Sin markdown, sin listas, sin "
     "asteriscos. Si fallaste, dilo claro y breve."
 )
+
+_GUARD = alma.guard(_ROL)
 
 
 # si habla de correo/agenda, NO es tarea de Claude Code: lo maneja el cerebro
